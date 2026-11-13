@@ -254,6 +254,7 @@ function createCard(acc) {
       <button class="btn small" data-action="logs">日志</button>
       <button class="btn small" data-action="config">配置</button>
       <button class="btn small" data-action="qr">二维码</button>
+      <button class="btn small primary" data-action="repair" style="display:none">一键修复</button>
       <button class="btn small danger" data-action="delete">删除</button>
     </div>
   `;
@@ -280,6 +281,7 @@ function createCard(acc) {
       start: el.querySelector('[data-action="start"]'),
       stop: el.querySelector('[data-action="stop"]'),
       restart: el.querySelector('[data-action="restart"]'),
+      repair: el.querySelector('[data-action="repair"]'),
     },
     series: [],
   };
@@ -320,6 +322,9 @@ function updateCard(acc, card) {
   card.reason.textContent = showReason ? acc.reason : warnReason || '';
   card.reason.classList.toggle('show', Boolean(showReason || warnReason));
   card.reason.classList.toggle('warn', Boolean(warnReason));
+  // 崩溃原因里带配置类提示时，直接给个一键修复入口
+  const needsRepair = /app-info\.json|protocol\.version/.test(acc.reason || '');
+  if (card.buttons.repair) card.buttons.repair.style.display = needsRepair ? '' : 'none';
   card.listen.textContent =
     acc.listen && acc.listen.length
       ? acc.listen.map((item) => `${item.addr}:${item.port}`).join(', ')
@@ -385,6 +390,18 @@ async function onCardAction(id, action) {
       return;
     }
     if (action === 'logs') return openDrawer(id);
+    if (action === 'repair') {
+      if (!confirm(`一键修复「${acc.name}」？\n\n① 优先补 app-info.json（从内置模板/导入来源）\n② 还不行就把 protocol.version 从 custom 改成内置版本\n\n只改这个账号的 config.json，不动会话数据。`)) return;
+      try {
+        const res = await api(`/api/accounts/${encodeURIComponent(id)}/repair`, { method: 'POST', body: { mode: 'auto' } });
+        const changed = (res.result && res.result.changed) || [];
+        toast(changed.length ? '已修复：' + changed.join('；') : '没有需要修的地方');
+        applyState(await api('/api/state'));
+      } catch (err) {
+        toast('修复失败：' + err.message, 'error');
+      }
+      return;
+    }
     if (action === 'config') return configModal(acc);
     if (action === 'qr') return qrModal(acc);
     if (action === 'delete') {

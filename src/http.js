@@ -289,6 +289,23 @@ function createServer(ctx) {
         broadcast({ type: 'accounts' });
         return sendJson(res, 200, { ok: true, account: removed });
       }
+      if (rest === 'diagnostics' && method === 'GET') {
+        try {
+          return sendJson(res, 200, { ok: true, diagnostics: accountsMod.diagnose(id) });
+        } catch (err) {
+          return sendJson(res, 400, { ok: false, error: err.message });
+        }
+      }
+      if (rest === 'repair' && method === 'POST') {
+        const body = await readJson(req);
+        try {
+          const result = accountsMod.repairAccount(id, body.mode || 'auto');
+          broadcast({ type: 'accounts' });
+          return sendJson(res, 200, { ok: true, result });
+        } catch (err) {
+          return sendJson(res, 400, { ok: false, error: err.message });
+        }
+      }
       if (rest === 'action' && method === 'POST') {
         const body = await readJson(req);
         const action = body.action;

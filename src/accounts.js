@@ -321,6 +321,82 @@ function writeConfigText(id, text) {
   return parsed;
 }
 
+// 一键修复账号：优先补 app-info.json；补不到就把 protocol.version 从 custom 改成内置版本
+function repairAccount(id, mode = 'auto') {
+  const account = store.findAccount(id);
+  if (!account) throw new Error('账号不存在：' + id);
+  const dir = store.accountDir(account);
+  const appInfo = path.join(dir, 'app-info.json');
+  const config = store.readAccountConfig(account);
+  if (!config) throw new Error('读不到账号的 config.json：' + path.join(dir, 'config.json'));
+  const protocol = config.protocol || {};
+  const version = String(protocol.version || '').trim();
+  const isCustom = version.toLowerCase() === 'custom';
+  const changed = [];
+
+  if (isCustom) {
+    // 1) 文件不存在，或存在但内容不是合法 JSON → 从模板/内置补齐
+    let needsCopy = !fs.existsSync(appInfo);
+    if (!needsCopy) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(appInfo, 'utf8'));
+        if (!parsed || !parsed.CurrentVersion) needsCopy = true;
+      } catch {
+        needsCopy = true;
+      }
+    }
+    if (needsCopy) {
+      const from = ensureAppInfo(account);
+      if (from) changed.push(`已从 ${from} 补齐 app-info.json`);
+      else changed.push('没有可用的 app-info.json 模板（assets/app-info.json 缺失）');
+    }
+  }
+
+  const missing = isCustom && !fs.existsSync(appInfo);
+  if ((mode === 'builtin' && isCustom) || (mode === 'auto' && missing)) {
+    const os = String(protocol.os || 'Linux');
+    const builtinByOs = {
+      Linux: '46494',
+      Windows: '52194',
+      Mac: '52194',
+      AndroidPhone: '9.2.80',
+      AndroidPad: '9.2.80',
+    };
+    const target = builtinByOs[os] || '46494';
+    config.protocol = { ...protocol, version: target };
+    store.writeAccountConfig(account, config);
+    changed.push(`protocol.version 从 custom 改为内置版本 ${target}（os=${os}）`);
+  }
+
+  return { changed, version: (config.protocol || {}).version, account };
+}
+
+// 账号配置体检：一眼看出 app-info.json / 可执行文件 / 协议版本这些坑
+function diagnose(id) {
+  const account = store.findAccount(id);
+  if (!account) throw new Error('账号不存在：' + id);
+  const dir = store.accountDir(account);
+  const config = store.readAccountConfig(account);
+  const protocol = (config && config.protocol) || {};
+  const appInfo = path.join(dir, 'app-info.json');
+  const sources = appInfoSources().map((item) => ({ path: item, exists: fs.existsSync(item) }));
+  return {
+    accountId: account.id,
+    dir,
+    dirExists: fs.existsSync(dir),
+    configPath: path.join(dir, 'config.json'),
+    configExists: fs.existsSync(path.join(dir, 'config.json')),
+    version: protocol.version || null,
+    os: protocol.os || null,
+    signApiUrl: protocol.signApiUrl || null,
+    appInfoPath: appInfo,
+    appInfoExists: fs.existsSync(appInfo),
+    appInfoSources: sources,
+    binary: platform.findBinary(dir),
+    binaryNames: platform.binNames(),
+  };
+}
+
 module.exports = {
   accountConfigTemplate,
   ensureExe,
@@ -329,6 +405,8 @@ module.exports = {
   appInfoSources,
   create,
   importAccount,
+  repairAccount,
+  diagnose,
   update,
   remove,
   readConfigText,

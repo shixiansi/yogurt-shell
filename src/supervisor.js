@@ -164,14 +164,18 @@ class Supervisor extends EventEmitter {
     const accountConfig = store.readAccountConfig(account) || {};
     const protocolVersion = String((accountConfig.protocol && accountConfig.protocol.version) || '').trim();
     if (protocolVersion.toLowerCase() === 'custom') {
-      const { ensureAppInfo } = require('./accounts');
+      const accountsLib = require('./accounts');
       const appInfo = path.join(dir, 'app-info.json');
-      const healed = ensureAppInfo(account);
+      const healed = accountsLib.ensureAppInfo(account);
       if (!healed) {
+        const searched = accountsLib.appInfoSources().join(' / ');
+        this.pushLog(account, 'ERROR', `[shell] 找不到 app-info.json，已查找：${searched}`);
         throw new Error(
           `账号目录缺少 app-info.json（protocol.version = custom 时必需）：${appInfo}。` +
+            `已查找：${searched}。` +
             '修法二选一：① 卡片「配置」里把 protocol.version 改成内置版本（Linux 46494 或 39038，Mac 52194 或 52892）；' +
-            '② 把 app-info.json 放进账号目录（仓库自带模板在 assets/app-info.json，面板也会自动补）'
+            '② 把 app-info.json 放进账号目录（仓库自带模板在 assets/app-info.json）。' +
+            '也可以直接点卡片上的「一键修复」。'
         );
       }
       if (healed !== appInfo) {
