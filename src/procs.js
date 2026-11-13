@@ -45,10 +45,16 @@ function runPowerShell(script, timeoutMs = 15000) {
   });
 }
 
+// 取路径最后一段：显式按 / 和 \ 切，避免 path.basename 在 Linux 上不认反斜杠
+function basenameAny(exePath) {
+  const text = String(exePath || '').replace(/ \(deleted\)$/, '');
+  const parts = text.split(/[\\/]/);
+  return parts[parts.length - 1];
+}
+
 function matchesBinaryName(exePath, platform = process.platform) {
   if (!exePath) return false;
-  const base = path.basename(String(exePath).replace(/ \(deleted\)$/, ''));
-  return binNames(platform).includes(base);
+  return binNames(platform).includes(basenameAny(exePath));
 }
 
 function listYogurtProcessesWindows() {
