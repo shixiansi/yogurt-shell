@@ -1,5 +1,8 @@
 # Yogurt Shell
 
+[![ci](https://github.com/shixiansi/yogurt-shell/actions/workflows/ci.yml/badge.svg)](https://github.com/shixiansi/yogurt-shell/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 给 [Yogurt](https://acidify.ntqqrev.org/docs/yogurt/start)（Milky 协议端）套的一层「壳」：**本地网页面板 + 进程守护 + 掉线停机 + 邮件通知 + 资源/日志监控 + 一键更新 + 多账号多开**。
 
 **Windows / Linux 都能跑**，零第三方依赖（只用 Node.js 内置模块；Windows 上额外借系统自带的 PowerShell 采样，Linux 上直接读 `/proc`），不用 `npm install`。
@@ -24,6 +27,11 @@
 ## 2. 快速开始
 
 环境要求：**Node.js 18+**（Windows 实测 Node 24）。不需要 `npm install`。
+
+```bash
+git clone https://github.com/shixiansi/yogurt-shell.git
+cd yogurt-shell
+```
 
 ### Windows
 

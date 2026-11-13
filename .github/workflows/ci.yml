@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: selftest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 平台无关自测（平台映射 / /proc 解析 / 内置 zip / 版本比较 / 采样聚合）
+        run: node scripts/selftest.js
+
+  panel-smoke:
+    name: panel smoke (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 在 Linux 上启动面板并走一遍接口
+        run: |
+          set -e
+          node server.js --port 3099 > panel.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3099/api/health >/dev/null 2>&1; then
+              echo "panel is up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          echo "--- /api/health ---"
+          curl -fsS http://127.0.0.1:3099/api/health
+          echo
+          echo "--- /api/state ---"
+          curl -fsS http://127.0.0.1:3099/api/state | head -c 600
+          echo
+          echo "--- 静态页面 ---"
+          curl -fsS -o /dev/null -w "index.html %{http_code}\n" http://127.0.0.1:3099/
+          curl -fsS -o /dev/null -w "app.js %{http_code}\n" http://127.0.0.1:3099/app.js
+          echo "--- 优雅退出 ---"
+          curl -fsS -X POST http://127.0.0.1:3099/api/panel/shutdown
+          sleep 3
+          if curl -fsS http://127.0.0.1:3099/api/health >/dev/null 2>&1; then
+            echo "panel still running after shutdown" >&2
+            exit 1
+          fi
+          echo "panel exited cleanly"
+          echo "--- panel.log ---"
+          tail -n 20 panel.log
