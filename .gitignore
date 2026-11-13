@@ -1,0 +1,5 @@
+# 运行时数据（账号会话、日志、下载的 exe 全在这里，不要提交）
+data/
+node_modules/
+*.log
+Thumbs.db

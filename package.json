@@ -1,0 +1,14 @@
+{
+  "name": "yogurt-shell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Yogurt 进程外壳：掉线自动杀进程+邮件通知，资源监控、实时日志、版本更新、多账号管理",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

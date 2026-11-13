@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yogurt Shell</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E🥛%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🥛</span>
+    <div>
+      <h1>Yogurt Shell</h1>
+      <p class="sub" id="server-line">正在连接…</p>
+    </div>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div class="topbar-actions">
+    <button class="btn primary" data-open="add">＋ 添加账号</button>
+    <button class="btn" data-open="settings">⚙ 设置</button>
+    <button class="btn" data-open="update">⭯ 更新</button>
+    <button class="btn" data-open="events">🔔 事件 <span class="badge hidden" id="event-badge">0</span></button>
+  </div>
+</header>
+
+<main>
+  <div class="grid" id="accounts"></div>
+  <div class="empty hidden" id="empty">
+    <h2>还没有账号</h2>
+    <p>点右上角「添加账号」新建，或用「导入现有目录」把已经在跑的 yogurt 接管进来。</p>
+    <div class="empty-actions">
+      <button class="btn primary" data-open="add">＋ 添加账号</button>
+    </div>
+  </div>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div class="drawer-title">
+      <b id="drawer-title">日志</b>
+      <span class="pill" id="drawer-status">-</span>
+      <span class="drawer-meta" id="drawer-meta"></span>
+    </div>
+    <div class="drawer-tools">
+      <input id="log-filter" class="input small" placeholder="过滤关键字…" />
+      <select id="log-level" class="input small">
+        <option value="">全部等级</option>
+        <option value="ERROR">ERROR</option>
+        <option value="WARN">WARN</option>
+        <option value="INFO">INFO</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+      <button class="btn small" id="log-chat">💬 隐藏聊天</button>
+      <button class="btn small" id="log-pause">⏸ 暂停滚动</button>
+      <button class="btn small" id="log-download">⤓ 下载</button>
+      <button class="btn small" id="log-clear">清空</button>
+      <button class="btn small" id="drawer-close">✕</button>
+    </div>
+  </div>
+  <div class="console" id="console"></div>
+  <form class="stdin" id="stdin-form" autocomplete="off">
+    <input id="stdin-input" class="input" placeholder="向进程标准输入发送内容（例如登录验证码、Ticket），回车发送" />
+    <button class="btn primary" type="submit">发送</button>
+  </form>
+</aside>
+<div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+
+<div class="modal-root hidden" id="modal-root">
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <h2 id="modal-title">标题</h2>
+      <button class="btn small" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
