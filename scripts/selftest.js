@@ -271,6 +271,57 @@ check('进程消失后不再沿用旧样本', () => {
   eq(m.series('u2').length, 1);
 });
 
+// ---------- 8. 实际监听地址解析 ----------
+console.log('\n[8] 实际监听地址（配置 vs 真实监听）');
+const listen = require('../src/listen');
+check('/proc/net/tcp 解析与十六进制解码', () => {
+  eq(listen.decodeHexAddr('0100007F'), '127.0.0.1', '回环');
+  eq(listen.decodeHexAddr('00000000'), '0.0.0.0', '所有网卡');
+  eq(listen.decodeHexAddr('00000000000000000000000000000000'), '::', 'IPv6 所有网卡');
+  const text = [
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+    '   0: 00000000:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12345 1 0 100 0 0 10 0',
+    '   1: 0100007F:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 67890 1 0 100 0 0 10 0',
+    '   2: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0 100 0 0 10 0',
+  ].join('\n');
+  const rows = listen.parseProcNetTcp(text);
+  eq(rows.length, 3);
+  eq(rows[0].addr, '0.0.0.0');
+  eq(rows[0].port, 3000);
+  eq(rows[0].state, '0A');
+  eq(rows[0].inode, '12345');
+  eq(rows[1].addr, '127.0.0.1');
+});
+check('netstat -ano 解析（Windows）', () => {
+  const text = [
+    '',
+    '活动连接',
+    '',
+    '  协议  本地地址          外部地址        状态           PID',
+    '  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       19884',
+    '  TCP    127.0.0.1:3090         0.0.0.0:0              LISTENING       18252',
+    '  TCP    127.0.0.1:3000         127.0.0.1:52344        ESTABLISHED     19884',
+    '  TCP    [::]:135               [::]:0                 LISTENING       900',
+  ].join('\r\n');
+  const rows = listen.parseNetstat(text);
+  eq(rows.length, 3, '只看 LISTENING');
+  eq(rows[0].addr, '0.0.0.0');
+  eq(rows[0].port, 3000);
+  eq(rows[0].pid, 19884);
+  eq(rows[1].pid, 18252);
+  eq(rows[2].addr, '::');
+});
+check('配置写了 0.0.0.0 但只监听回环 → 给出提示', () => {
+  const bad = listen.describeMismatch('0.0.0.0', 3000, [{ addr: '127.0.0.1', port: 3000 }]);
+  if (!bad || !/未生效/.test(bad)) throw new Error('应当提示未生效，实际：' + bad);
+  const ok = listen.describeMismatch('0.0.0.0', 3000, [{ addr: '0.0.0.0', port: 3000 }]);
+  eq(ok, null, '正常情况不该报错');
+  const localOk = listen.describeMismatch('127.0.0.1', 3000, [{ addr: '0.0.0.0', port: 3000 }]);
+  eq(localOk, null, '监听了所有网卡当然包含回环');
+  const portBad = listen.describeMismatch('127.0.0.1', 3000, [{ addr: '127.0.0.1', port: 3999 }]);
+  if (!portBad || !/端口/.test(portBad)) throw new Error('应当提示端口不一致');
+});
+
 // ---------- 汇总 ----------
 console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
 if (failures.length) {

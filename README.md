@@ -201,8 +201,10 @@ yogurt-shell/
 │   ├── supervisor.js          # 进程守护：启停/杀进程树/状态机/探活/掉线判定
 │   ├── metrics.js             # 采样聚合与历史曲线（Windows/Linux 两种后端）
 │   ├── sampler-linux.js       # 读 /proc 的实现 + 可单测的解析函数
+│   ├── listen.js              # 查进程「实际监听地址」（netstat / /proc/net/tcp）
 │   ├── procs.js               # 跨平台进程枚举 / 结束进程 / 找 PowerShell
 │   ├── platform.js            # 平台差异：二进制名、发版包名、可执行位
+│   ├── console-tee.js         # 后台/重启进程时把控制台输出写进日志文件
 │   ├── notifier.js            # 事件记录 + 邮件内容组装 + 去重
 │   ├── smtp.js                # 内置 SMTP 客户端
 │   ├── updater.js             # GitHub release 检查/下载/校验/安装
@@ -255,9 +257,24 @@ sudo loginctl enable-linger $USER
 
 ## 10. 安全提醒
 
-- 面板默认只监听 `127.0.0.1:3090`，**不要直接改成 0.0.0.0**；确实需要远程访问时，先设 `data/config.json` 的 `panel.token`（设了之后所有 `/api/*` 都要带令牌，前端会提示输入一次）。
+- 面板默认只监听 `127.0.0.1:3090`。要让手机/另一台机器访问，在面板「⚙ 设置 → 面板监听」里把监听地址改成 `0.0.0.0`，**同时设一个访问令牌**（不设的话任何能连到这个端口的人都能启停你的 bot，面板顶部会显示“⚠ 无访问令牌”）。
+- 改完监听地址必须**重启面板**才生效（设置里就有「⟳ 重启面板」按钮，会自动停账号 → 重启 → 重新拉起账号）。
 - `data/accounts/<QQ号>/config.json` 里的密码是**明文**，`session-store.json` 等同于登录凭据，两者都不要外传、不要提交到 git。
 - 掉线停机意味着账号需要人工介入（重新扫码/换签名 API/等风控过去），这是刻意的：宁可停，也不要反复请求把号撞死。
+
+### 两个 host 别搞混
+
+| 配置项 | 在哪 | 管什么 |
+| --- | --- | --- |
+| `panel.host` | `data/config.json` → 面板「设置 → 面板监听」 | **面板网页**监听在哪，决定你能不能远程打开面板 |
+| `milky.http.host` | `data/accounts/<QQ号>/config.json` → 账号卡片「配置」 | **yogurt 的 Milky API** 监听在哪，决定别的程序能不能远程调 API |
+
+两个都改成 `0.0.0.0` 才能「面板能远程打开 + API 能远程调用」。另外：
+
+- 日志里 `HttpModule 127.0.0.1 调用 API /get_login_info` 里的 `127.0.0.1` 是**客户端来源 IP**（调用方在本机），跟监听地址无关，把 host 改成 `0.0.0.0` 它也不会变。
+- 判断到底生效没有，看两处：① yogurt 启动日志里的 `Listen Address: 0.0.0.0:3000`；② 面板账号卡片上的「实际监听」——它会直接读进程的真实套接字（Windows `netstat -ano`，Linux `/proc/net/tcp`），配置和实际不一致时会用黄色标出来。
+- `milky.http.host` 设成 `0.0.0.0` 且 `accessToken` 为空时，yogurt 会打印安全警告并**延迟 10 秒**再开始监听（不是卡死）。
+- 云服务器还要记得在安全组/防火墙放行对应端口。
 
 ---
 
@@ -269,6 +286,7 @@ sudo loginctl enable-linger $USER
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |
+| 改成 `0.0.0.0` 没效果、日志里还是 127.0.0.1 | 见上面「两个 host 别搞混」：① 面板 host/port 只在启动时读，改完要重启面板；② 接管后生效的是 `data/accounts/<QQ号>/config.json`，旧目录那份已经作废；③ 日志里的 127.0.0.1 是客户端来源 IP，本来就不会变。以账号卡片的「实际监听」和 yogurt 的 `Listen Address` 为准 |
 | 更新失败 `fetch failed` | `github.com` 不通，填镜像前缀（如 `https://gh-proxy.com/`），或改用「本地 zip 安装」 |
 | 更新失败「压缩包里没有…」 | 下错了平台的包；面板默认按平台自动选包，`update.asset` 别乱填 |
 | 更新后起不来 | `data/backups/` 里有旧二进制，覆盖回账号目录即可回滚；再点「启动」 |
@@ -297,7 +315,9 @@ node scripts/selftest.js      # 或 npm run selftest
 [4] 版本比较（更新判定）              ok
 [5] 进程识别                         ok
 [6] 基础工具                         ok
-全部通过：14 项
+[7] 采样聚合                         ok
+[8] 实际监听地址解析                 ok（netstat / /proc/net/tcp / 配置不匹配提示）
+全部通过：19 项
 ```
 
 ---

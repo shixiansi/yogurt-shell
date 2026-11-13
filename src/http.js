@@ -6,6 +6,7 @@ const http = require('http');
 const { URL } = require('url');
 const store = require('./store');
 const accountsMod = require('./accounts');
+const { listenAddresses, describeMismatch } = require('./listen');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -61,7 +62,7 @@ function maskMail(mail) {
 }
 
 function createServer(ctx) {
-  const { supervisor, metrics, notifier, bus, updater } = ctx;
+  const { supervisor, metrics, notifier, bus, updater, meta } = ctx;
   const sseClients = new Set();
   const logClients = new Map(); // accountId -> Set<res>
   const publicDir = path.join(store.ROOT, 'public');
@@ -99,22 +100,39 @@ function createServer(ctx) {
     return header === token || query === token || (cookieToken && decodeURIComponent(cookieToken[1]) === token);
   }
 
-  function statePayload() {
+  async function statePayload() {
     const cfg = store.getConfig();
-    const list = supervisor.snapshots().map((s) => {
-      const m = metrics.current(s.id);
-      return {
-        ...s,
-        metrics: m || null,
-        series: metrics.series(s.id),
-        logMeta: bus.meta(s.id),
-      };
-    });
+    const snaps = supervisor.snapshots();
+    const list = await Promise.all(
+      snaps.map(async (s) => {
+        const m = metrics.current(s.id);
+        let listen = [];
+        let listenMismatch = null;
+        if (s.pid) {
+          listen = await listenAddresses(s.pid);
+          const ac = store.readAccountConfig(store.findAccount(s.id) || { id: s.id });
+          const httpCfg = (ac && ac.milky && ac.milky.http) || {};
+          listenMismatch = describeMismatch(httpCfg.host || s.host, httpCfg.port || s.port, listen);
+        }
+        return {
+          ...s,
+          metrics: m || null,
+          series: metrics.series(s.id),
+          logMeta: bus.meta(s.id),
+          listen,
+          listenMismatch,
+        };
+      })
+    );
     return {
       server: {
         now: Date.now(),
         port: cfg.panel.port,
         host: cfg.panel.host,
+        bindHost: meta ? meta.bindHost : cfg.panel.host,
+        bindPort: meta ? meta.bindPort : cfg.panel.port,
+        lanUrls: meta ? meta.lanUrls : [],
+        tokenRequired: Boolean((cfg.panel.token || '').trim()),
         platform: process.platform,
         node: process.version,
         cores: require('os').cpus().length,
@@ -126,6 +144,11 @@ function createServer(ctx) {
         yogurt: cfg.yogurt,
         update: cfg.update,
         mail: maskMail(cfg.mail),
+        panel: {
+          host: cfg.panel.host,
+          port: cfg.panel.port,
+          tokenSet: Boolean((cfg.panel.token || '').trim()),
+        },
       },
       update: {
         current: updater.currentVersion(),
@@ -149,18 +172,28 @@ function createServer(ctx) {
 
     // --- 状态 ---
     if (pathname === '/api/health' && method === 'GET') return sendJson(res, 200, { ok: true, now: Date.now() });
-    if (pathname === '/api/panel/shutdown' && method === 'POST') {
-      const remote = req.socket.remoteAddress || '';
-      if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote)) {
-        return sendJson(res, 403, { error: '只允许本机调用' });
+
+    // 停/重启面板：本机随便调；跨机调用必须配置了 panel.token（否则等于把开关暴露给全网）
+    const isLoopback = /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress || '');
+    const tokenSet = Boolean((cfg.panel.token || '').trim());
+    if ((pathname === '/api/panel/shutdown' || pathname === '/api/panel/restart') && method === 'POST') {
+      if (!isLoopback && !tokenSet) {
+        return sendJson(res, 403, {
+          error: '跨机操作面板需要先设置 panel.token（在「设置 → 面板监听」里）',
+        });
       }
-      sendJson(res, 200, { ok: true, message: '面板正在停止（会先停掉所有账号）' });
+      const restarting = pathname.endsWith('/restart');
+      sendJson(res, 200, {
+        ok: true,
+        message: restarting ? '面板正在重启（会先停掉所有账号，2 秒后自动拉起）' : '面板正在停止（会先停掉所有账号）',
+      });
       setTimeout(() => {
-        if (ctx.shutdown) ctx.shutdown('api');
+        if (restarting && ctx.restart) ctx.restart();
+        else if (ctx.shutdown) ctx.shutdown('api');
       }, 200);
       return;
     }
-    if (pathname === '/api/state' && method === 'GET') return sendJson(res, 200, statePayload());
+    if (pathname === '/api/state' && method === 'GET') return sendJson(res, 200, await statePayload());
 
     // --- SSE ---
     if (pathname === '/api/stream' && method === 'GET') {
@@ -171,7 +204,7 @@ function createServer(ctx) {
         'X-Accel-Buffering': 'no',
       });
       res.write('retry: 3000\n\n');
-      res.write('data: ' + JSON.stringify({ type: 'hello', state: statePayload() }) + '\n\n');
+      res.write('data: ' + JSON.stringify({ type: 'hello', state: await statePayload() }) + '\n\n');
       sseClients.add(res);
       const timer = setInterval(() => {
         try {
@@ -308,6 +341,36 @@ function createServer(ctx) {
     }
 
     // --- 设置 ---
+    if (pathname === '/api/settings/panel' && method === 'PUT') {
+      const body = await readJson(req);
+      const host = String(body.host === undefined ? cfg.panel.host : body.host).trim();
+      const port = Number(body.port === undefined ? cfg.panel.port : body.port);
+      const token = body.token === undefined ? cfg.panel.token : String(body.token || '').trim();
+      const beforeToken = (cfg.panel.token || '').trim();
+      if (host !== 'localhost' && !/^\[?[0-9a-fA-F:.]+\]?$/.test(host)) {
+        return sendJson(res, 400, { error: '监听地址不合法：填 127.0.0.1（仅本机）、0.0.0.0（所有网卡）或具体 IP' });
+      }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return sendJson(res, 400, { error: '端口必须是 1-65535 的整数' });
+      }
+      const bindHost = meta ? meta.bindHost : cfg.panel.host;
+      const bindPort = meta ? meta.bindPort : cfg.panel.port;
+      store.updateConfig((c) => {
+        c.panel.host = host;
+        c.panel.port = port;
+        c.panel.token = token;
+      });
+      const needRestart = host !== bindHost || port !== bindPort || token !== beforeToken;
+      const wildcard = host === '0.0.0.0' || host === '::';
+      return sendJson(res, 200, {
+        ok: true,
+        needRestart,
+        panel: { host, port, tokenSet: Boolean(token) },
+        warning: wildcard && !token
+          ? '已监听所有网卡但没有令牌：任何能连到该端口的人都能启停你的 bot，建议设置 panel.token'
+          : null,
+      });
+    }
     if (pathname === '/api/settings/mail' && method === 'PUT') {
       const body = await readJson(req);
       const next = { ...cfg.mail, ...body };

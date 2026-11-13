@@ -157,12 +157,20 @@ function applyState(data) {
 function renderServerLine() {
   const s = state.server;
   if (!s) return;
+  const bindHost = s.bindHost || s.host;
+  const bindPort = s.bindPort || s.port;
+  const wildcard = bindHost === '0.0.0.0' || bindHost === '::';
   const parts = [
-    `面板 :${s.port}`,
+    `监听 ${bindHost}:${bindPort}`,
     `Node ${s.node}`,
     `${s.cores} 核`,
     `已运行 ${fmtUptime(s.uptimeMs)}`,
   ];
+  if (wildcard) {
+    const urls = (s.lanUrls || []).map((u) => u.url);
+    parts.push(urls.length ? `局域网 ${urls.join(' / ')}` : '未发现局域网地址');
+    if (!s.tokenRequired) parts.push('⚠ 无访问令牌');
+  }
   if (s.metricsDisabled) parts.push('采样不可用：' + s.metricsDisabled);
   $('#server-line').textContent = parts.join(' · ');
 }
@@ -223,6 +231,7 @@ function createCard(acc) {
       <span>运行 <b data-f="uptime"></b></span>
       <span>线程 <b data-f="threads"></b></span>
       <span>句柄 <b data-f="handles"></b></span>
+      <span>实际监听 <b data-f="listen"></b></span>
     </div>
     <div class="charts">
       <div class="chart">
@@ -258,6 +267,7 @@ function createCard(acc) {
     uptime: f('uptime'),
     threads: f('threads'),
     handles: f('handles'),
+    listen: f('listen'),
     cpu: f('cpu'),
     mem: f('mem'),
     cpuCanvas: f('cpuCanvas'),
@@ -304,8 +314,16 @@ function updateCard(acc, card) {
     card.lastlog.textContent = acc.lastLine.text;
   }
   const showReason = (acc.status === 'offline' || acc.status === 'crashed') && acc.reason;
-  card.reason.textContent = showReason ? acc.reason : '';
-  card.reason.classList.toggle('show', Boolean(showReason));
+  const warnReason = !showReason && acc.listenMismatch;
+  card.reason.textContent = showReason ? acc.reason : warnReason || '';
+  card.reason.classList.toggle('show', Boolean(showReason || warnReason));
+  card.reason.classList.toggle('warn', Boolean(warnReason));
+  card.listen.textContent =
+    acc.listen && acc.listen.length
+      ? acc.listen.map((item) => `${item.addr}:${item.port}`).join(', ')
+      : acc.pid
+        ? '读取中…'
+        : '-';
 
   const running = ['starting', 'login', 'online', 'stopping'].includes(acc.status);
   card.buttons.start.disabled = running;
@@ -702,11 +720,36 @@ function addAccountModal() {
 function settingsModal() {
   const mail = state.settings.mail || {};
   const y = state.settings.yogurt || {};
+  const panel = state.settings.panel || {};
   const probe = y.probe || {};
   const log = y.log || {};
   openModal(
     '设置',
     `
+    <div class="section">
+      <h3>面板监听</h3>
+      <div class="desc">这里只影响面板本身，<b>改完必须重启面板</b>才生效。yogurt 自己的监听地址在账号卡片的「配置」里（<span class="mono">milky.http.host</span>），那是另一回事。</div>
+      <div class="grid3">
+        <div class="field">
+          <label>监听地址</label>
+          <input class="input" id="p-host" value="${esc(panel.host || '127.0.0.1')}" />
+          <div class="hint">127.0.0.1 仅本机可访问；0.0.0.0 所有网卡（局域网/公网）</div>
+        </div>
+        <div class="field"><label>端口</label><input class="input" id="p-port" value="${panel.port || 3090}" /></div>
+        <div class="field">
+          <label>访问令牌</label>
+          <input class="input" id="p-token" type="password" placeholder="${panel.tokenSet ? '已设置（留空则不修改）' : '留空表示不校验'}" />
+          <div class="hint">对外监听时强烈建议设置</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" id="p-save">保存</button>
+        <button class="btn" id="p-clear">清除令牌</button>
+        <button class="btn" id="p-restart">⟳ 重启面板</button>
+      </div>
+      <div class="hint" id="p-msg"></div>
+    </div>
+
     <div class="section">
       <h3>邮件通知</h3>
       <div class="desc">账号掉线 / 进程异常退出时发邮件。支持 465 隐式 TLS、587 STARTTLS。</div>
@@ -750,6 +793,30 @@ function settingsModal() {
   `,
     {
       onOpen(body) {
+        const pMsg = $('#p-msg', body);
+        const savePanel = async (extra = {}) => {
+          try {
+            const payload = {
+              host: $('#p-host', body).value.trim(),
+              port: Number($('#p-port', body).value),
+              ...extra,
+            };
+            const tokenInput = $('#p-token', body).value;
+            if (tokenInput) payload.token = tokenInput;
+            const res = await api('/api/settings/panel', { method: 'PUT', body: payload });
+            const notes = [];
+            if (res.warning) notes.push('⚠ ' + res.warning);
+            notes.push(res.needRestart ? '已保存，需要重启面板才生效（点「重启面板」）' : '已保存（与当前监听一致，无需重启）');
+            pMsg.textContent = notes.join(' · ');
+            applyState(await api('/api/state'));
+          } catch (err) {
+            pMsg.textContent = err.message;
+          }
+        };
+        $('#p-save', body).onclick = () => savePanel();
+        $('#p-clear', body).onclick = () => savePanel({ token: '' });
+        $('#p-restart', body).onclick = () => restartPanel(pMsg);
+
         $('#m-save', body).onclick = async () => {
           try {
             const payload = {
@@ -814,6 +881,29 @@ function settingsModal() {
       },
     }
   );
+}
+
+// 面板重启：发请求 → 等它回来 → 刷新页面（令牌可能刚改，刷新后会提示输入）
+async function restartPanel(msgEl) {
+  if (!confirm('重启面板会先停掉所有账号，2 秒后自动拉起并重新启动账号。继续？')) return;
+  if (msgEl) msgEl.textContent = '正在重启…';
+  try {
+    await api('/api/panel/restart', { method: 'POST', body: {} });
+  } catch (err) {
+    if (msgEl) msgEl.textContent = '请求失败：' + err.message;
+    return;
+  }
+  for (let i = 0; i < 45; i++) {
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      const res = await fetch('/api/health', { headers: token ? { 'x-panel-token': token } : {} });
+      if (res.ok) {
+        location.reload();
+        return;
+      }
+    } catch {}
+  }
+  if (msgEl) msgEl.textContent = '面板 36 秒内没回来：看 data/panel.out.log，或手动重新启动';
 }
 
 function updateModal() {
