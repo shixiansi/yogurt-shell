@@ -253,6 +253,9 @@ systemctl --user disable --now yogurt-shell && rm ~/.config/systemd/user/yogurt-
 sudo loginctl enable-linger $USER
 ```
 
+> 用 systemd 托管时，改完「设置 → 面板监听」请在 shell 里执行
+> `systemctl --user restart yogurt-shell`——面板里的「重启面板」按钮会自动禁用，否则两边会抢同一个端口。
+
 ---
 
 ## 10. 安全提醒
