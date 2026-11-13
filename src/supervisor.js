@@ -3,9 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { spawn, execFile } = require('child_process');
+const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const store = require('./store');
+const platform = require('./platform');
 
 const STATUS_LABEL = {
   stopped: '已停止',
@@ -42,8 +43,8 @@ class Supervisor extends EventEmitter {
       const p = path.isAbsolute(cfg.yogurt.exePath) ? cfg.yogurt.exePath : path.join(store.DATA_DIR, cfg.yogurt.exePath);
       if (fs.existsSync(p)) return p;
     }
-    const local = path.join(dir, 'yogurt.exe');
-    return local;
+    // Windows: yogurt.exe；Linux/macOS: yogurt.kexe 或 yogurt
+    return platform.findBinary(dir) || path.join(dir, platform.defaultBinName());
   }
 
   rt(id) {
@@ -149,7 +150,9 @@ class Supervisor extends EventEmitter {
 
     const exe = this.exeFor(account);
     if (!fs.existsSync(exe)) {
-      throw new Error('找不到 yogurt 可执行文件：' + exe + '（可用「更新 / 安装」把 exe 装到账号目录）');
+      throw new Error(
+        `找不到 yogurt 可执行文件：${exe}（${process.platform === 'win32' ? 'yogurt.exe' : 'yogurt.kexe'}；可用「更新 / 安装」把它装到账号目录）`
+      );
     }
     this.syncPortFromConfig(account);
     const target = this.resolveTarget(account);
@@ -286,17 +289,8 @@ class Supervisor extends EventEmitter {
 
   killTree(pid) {
     if (!pid) return;
-    if (process.platform === 'win32') {
-      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
-    } else {
-      try {
-        process.kill(-pid, 'SIGKILL');
-      } catch {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {}
-      }
-    }
+    const { killPid } = require('./procs');
+    killPid(pid).catch(() => {});
   }
 
   async restart(id) {
@@ -533,12 +527,11 @@ class Supervisor extends EventEmitter {
 
   // 面板被强杀时，子进程可能变孤儿并占着端口；启动时先清掉本面板账号目录下的残留
   async cleanupOrphans() {
-    if (process.platform !== 'win32') return [];
-    const { listYogurtProcesses, killPid } = require('./winproc');
+    const { listYogurtProcesses, killPid } = require('./procs');
     const procs = await listYogurtProcesses();
     const killed = [];
     for (const p of procs) {
-      const exe = String(p.ExecutablePath || '');
+      const exe = String(p.exePath || '');
       if (!exe) continue;
       if (!exe.toLowerCase().startsWith(store.DATA_DIR.toLowerCase())) continue;
       const account = this.cfg().accounts.find((a) => {
@@ -548,9 +541,9 @@ class Supervisor extends EventEmitter {
           return false;
         }
       });
-      await killPid(p.ProcessId);
-      killed.push({ pid: p.ProcessId, exe });
-      if (account) this.pushLog(account, 'WARN', `[shell] 清理上次面板遗留的进程 pid=${p.ProcessId}`);
+      await killPid(p.pid);
+      killed.push({ pid: p.pid, exe });
+      if (account) this.pushLog(account, 'WARN', `[shell] 清理上次面板遗留的进程 pid=${p.pid}`);
     }
     return killed;
   }

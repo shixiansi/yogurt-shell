@@ -71,7 +71,19 @@ async function main() {
   const server = createServer({ supervisor, metrics, notifier, bus, updater, shutdown });
 
   await new Promise((resolve, reject) => {
-    server.once('error', reject);
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        reject(
+          new Error(
+            `端口 ${port} 已被占用：可能面板已经在运行（先打开 http://${host}:${port}/ 看看），或用 --port 换一个端口`
+          )
+        );
+      } else if (err.code === 'EACCES') {
+        reject(new Error(`没有权限监听 ${host}:${port}（<1024 的端口需要 root）`));
+      } else {
+        reject(err);
+      }
+    });
     server.listen(port, host, resolve);
   });
 

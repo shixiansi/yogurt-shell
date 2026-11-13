@@ -2,7 +2,7 @@
 
 给 [Yogurt](https://acidify.ntqqrev.org/docs/yogurt/start)（Milky 协议端）套的一层「壳」：**本地网页面板 + 进程守护 + 掉线停机 + 邮件通知 + 资源/日志监控 + 一键更新 + 多账号多开**。
 
-零第三方依赖（只用 Node.js 内置模块 + Windows 自带 PowerShell 采样），不用 `npm install` 就能跑。
+**Windows / Linux 都能跑**，零第三方依赖（只用 Node.js 内置模块；Windows 上额外借系统自带的 PowerShell 采样，Linux 上直接读 `/proc`），不用 `npm install`。
 
 ![面板](docs/panel.png)
 
@@ -12,37 +12,53 @@
 
 | 原来的痛点 | 现在 |
 | --- | --- |
-| 账号掉线后，上游（xunlu-core 等）还在不停调 `/api/...`，一直空转刷日志 | 面板探活 + 日志特征双重判定，**掉线即 `taskkill` 掉 yogurt 进程**，请求立刻 fast-fail，等人工恢复；不会偷偷自动重连去撞风控 |
+| 账号掉线后，上游（xunlu-core 等）还在不停调 `/api/...`，一直空转刷日志 | 面板探活 + 日志特征双重判定，**掉线即结束 yogurt 进程**，请求立刻 fast-fail，等人工恢复；不会偷偷自动重连去撞风控 |
 | 掉线了没人知道 | 掉线 / 进程异常退出都会发邮件到你配好的邮箱（可多个收件人），邮件里带账号、端口、PID、运行时长、版本、**最后 40 行日志**和处置建议 |
 | 看不到 yogurt 吃了多少 CPU/内存、日志在哪 | 卡片上实时显示 CPU（整机%）/ 内存 / 线程 / 句柄 + 4.5 分钟曲线；日志按账号落盘、可实时流式查看、过滤、下载 |
-| 升级要手动停进程、换 exe、再重启 | 面板里点「更新」：查 GitHub Releases → 下载 → sha256 校验 → 解压 → 停账号 → 换 exe（旧 exe 自动备份）→ 重新拉起；github.com 直连不通时自动走镜像 |
+| 升级要手动停进程、换二进制、再重启 | 面板里点「更新」：查 GitHub Releases → 下载对应平台包 → sha256 校验 → 解压 → 停账号 → 换二进制（旧的自动备份）→ 重新拉起；github.com 直连不通时自动走镜像 |
 | 想挂多个号只能复制一堆文件夹、怕端口冲突 | 每个账号一个目录（自己的 `config.json` / `session-store.json` / 日志），端口自动分配与校验，面板统一启停 |
-| 面板被强杀后残留进程占着端口 | 面板启动时自动清理自己账号目录下的 `yogurt.exe` 遗留进程 |
+| 面板被强杀后残留进程占着端口 | 面板启动时自动清理自己账号目录下的遗留 yogurt 进程（Windows 用 CIM 枚举，Linux 扫 `/proc`） |
 
 ---
 
 ## 2. 快速开始
 
-环境要求：**Windows + Node.js 18+**（实测 Node 24）。不需要 `npm install`。
+环境要求：**Node.js 18+**（Windows 实测 Node 24）。不需要 `npm install`。
+
+### Windows
 
 ```bat
-:: 1) 启动面板（双击 start.cmd 也可以）
 cd /d E:\lagrangeV2\yogurt-shell
-node server.js
-
-:: 2) 浏览器打开
-::    http://127.0.0.1:3090/
+start.cmd
+:: 或 node server.js
+:: 浏览器打开 http://127.0.0.1:3090/
 ```
 
-启动后控制台会打印面板地址、数据目录、账号数量。**按 Ctrl+C 退出时会先停掉所有账号再退出**（保证不留无人监管的 yogurt）。
+### Linux / macOS
 
-想让它脱离终端常驻（关掉窗口也继续跑）：
+```bash
+cd /path/to/yogurt-shell
+chmod +x start.sh stop.sh scripts/*.sh     # 从 Windows 拷过去时尤其需要
+./start.sh                                 # 或 node server.js
+# 浏览器打开 http://127.0.0.1:3090/
+```
+
+启动后控制台会打印面板地址、数据目录、账号数量。**Ctrl+C 退出时会先停掉所有账号再退出**（保证不留无人监管的 yogurt）。
+
+想脱离终端常驻：
+
+```bash
+# Linux：装成 systemd 用户服务（登录即启动，崩溃自动拉起）
+bash scripts/install-autostart-systemd.sh
+
+# 或者简单放后台
+nohup node server.js >> data/panel.out.log 2>&1 &
+./stop.sh        # 优雅停止（先停账号，再退面板）
+```
 
 ```bat
-:: 后台启动：输出写到 data\panel.out.log，pid 记在 data\runtime\panel.pid
+:: Windows 后台启动
 cmd /c start "" /min cmd /c "cd /d E:\lagrangeV2\yogurt-shell && node server.js >> data\panel.out.log 2>&1"
-
-:: 优雅停止：先停掉所有账号，再退出面板
 stop.cmd
 ```
 
@@ -51,10 +67,10 @@ stop.cmd
 ### 接管一个已经在跑的 yogurt
 
 1. 先停掉原来那个 yogurt 进程（否则两个进程抢同一个 QQ 会话与端口）。
-2. 面板右上角「＋ 添加账号」→「导入现有目录（接管）」→ 填原来那个目录（例如 `E:\lagrangeV2\yogurt-windows-x64 (1)`）。
-3. 面板会复制 `config.json` / `app-info.json` / `session-store*.json` / `yogurt.exe` 到新账号目录（原目录不动），端口沿用原配置，然后自动拉起。
+2. 面板右上角「＋ 添加账号」→「导入现有目录（接管）」→ 填原来那个目录。
+3. 面板会复制 `config.json` / `app-info.json` / `session-store*.json` / 该平台的 yogurt 二进制到新账号目录（原目录不动），端口沿用原配置，然后自动拉起。
 
-> 本项目就是这么接管的：账号 `100000001` 从 `yogurt-windows-x64 (1)` 迁移到 `data/accounts/100000001/`，会话直接可用，没有重新扫码。
+> 本项目的实例就是这么接管的：账号 `100000001` 从 `yogurt-windows-x64 (1)` 迁移到 `data/accounts/100000001/`，会话直接可用，没有重新扫码。
 
 ---
 
@@ -65,15 +81,17 @@ stop.cmd
 1. **接口探活**：`POST http://<配置的 host:port>/api/get_login_info`（带 `accessToken`），要求 `200 + status=ok + retcode=0`。
    - 连续失败 `failures` 次（默认 3）→ 判定掉线。
    - 启动后有 `graceMs` 宽限期（默认 90s），扫码/登录过程不会被误判；状态为「登录中」时不累计失败次数。
+   - 探活目标是**启动时快照**下来的地址，运行中改配置不会造成误判（改配置需重启生效）。
 2. **日志特征匹配**：日志里出现 `被踢下线` / `您已在其他设备登录` / `登录已失效` / `KickedOffline` / `NotLoggedIn` …（可在设置里加词）→ 立即判定掉线。
    - 只匹配系统日志，**聊天内容（`Logging [...]` 行）会被跳过**，群友聊到「掉线」不会误杀。
 
 判定掉线后依次执行：
 
 ```
-标记状态「掉线停机」 → taskkill /T /F 结束进程树 → 写日志 → 记事件 → 发邮件
+标记状态「掉线停机」 → 结束进程树 → 写日志 → 记事件 → 发邮件
 ```
 
+- 结束进程：Windows `taskkill /PID x /T /F`；Linux/macOS 走进程组 `kill(-pid, SIGKILL)`。
 - **不会**自动重启（可在设置里单独打开「崩溃后自动重启」，但掉线路径永远不会自动重启）。
 - 面板上点「启动」即可恢复；恢复后探活立即重新开始。
 
@@ -121,11 +139,20 @@ Yogurt 账号掉线，已停止进程
 
 ## 5. 监控与日志
 
-- **占用**：常驻一个 PowerShell 采样进程（`scripts/win-sampler.ps1`，每 3s 一次），按 PID 读取 CPU 时间 / 工作集 / 私有内存 / 线程数 / 句柄数，在面板里算成「整机 CPU%」并画 4.5 分钟曲线。面板本身不重启采样进程，账号增删只更新 PID 名单。
-- **日志**：面板直接捕获 yogurt 的 stdout/stderr（所以不需要 Yogurt 自己写文件），逐行写入 `data/logs/<QQ号>.log`；超过 20MB 自动轮转，保留 6 份（可调）。
-  - 日志抽屉里可实时跟随、按关键字/等级过滤、「隐藏聊天」只看系统日志、一键下载、清空。
-  - 底部输入框可以直接向 yogurt 的 **标准输入** 发送内容：扫码登录后如果要求短信验证码 / Ticket，就在这里输入。
-  - 登录二维码：Yogurt 会写 `qrcode.png` 到账号目录，面板卡片上的「二维码」按钮直接显示；日志里打印的登录链接也可以点开。
+**占用采样**按平台走两条实现，输出同一种结构：
+
+| 平台 | 实现 |
+| --- | --- |
+| Windows | 常驻一个 PowerShell 进程（`scripts/win-sampler.ps1`，每 3s 输出一行 NDJSON），用 `Get-Process` 读 CPU 时间 / 工作集 / 私有内存 / 线程 / 句柄 |
+| Linux | 面板进程自己每 3s 读 `/proc/<pid>/stat`（utime+stime）、`/proc/<pid>/status`（VmRSS、RssAnon、Threads）、`/proc/<pid>/fd`（文件描述符数），不额外起进程 |
+
+两边都换算成「整机 CPU%」并保存 4.5 分钟曲线。账号增删只更新 PID 名单，不重启采样。
+
+**日志**：面板直接捕获 yogurt 的 stdout/stderr（所以不需要 Yogurt 自己写文件），逐行写入 `data/logs/<QQ号>.log`；超过 20MB 自动轮转，保留 6 份（可调）。
+
+- 日志抽屉里可实时跟随、按关键字/等级过滤、「隐藏聊天」只看系统日志、一键下载、清空。
+- 底部输入框可以直接向 yogurt 的 **标准输入** 发送内容：扫码登录后如果要求短信验证码 / Ticket，就在这里输入。
+- 登录二维码：Yogurt 会写 `qrcode.png` 到账号目录，面板卡片上的「二维码」按钮直接显示；日志里打印的登录链接也可以点开。
 
 ---
 
@@ -134,7 +161,8 @@ Yogurt 账号掉线，已停止进程
 面板「⭯ 更新」：
 
 - **检查更新**：读 `SaltifyDev/yogurt-releases` 最新 release（`update.repo` 可改）。
-- **下载并安装**：下载 `yogurt-windows-x64.zip` → 用 `digest` 里的 sha256 校验 → 解压到 `data/dist/<tag>/` → 对每个账号：停进程 → 备份旧 exe 到 `data/backups/` → 硬链接新 exe（同盘零拷贝，失败则复制）→ 自动拉起。
+- **自动选包**：按当前平台/架构挑 release 里的包 —— `yogurt-windows-x64.zip` / `yogurt-linux-x64.zip` / `yogurt-linux-arm64.zip` / `yogurt-macos-arm64.zip`；`update.asset` 留空即为自动，填了则强制使用。
+- **下载并安装**：下载 → 用 release 里的 `digest` 做 sha256 校验 → 内置 zip 解压到 `data/dist/<tag>/` → 对每个账号：停进程 → 备份旧二进制到 `data/backups/` → 硬链接新二进制（同盘零拷贝，失败则复制）→ 补可执行权限（Linux/macOS）→ 自动拉起。
 - **本地 zip 安装**：没网时手动下载 zip，从面板上传安装（浏览器直传，不需要额外组件）。
 - **镜像**：`github.com` 直连超时会自动改用镜像前缀（默认顺序：直连 → 已记住的镜像 → `https://gh-proxy.com/` → `https://ghfast.top/`），成功后把可用的镜像记到配置里，下次直接用。
 
@@ -144,7 +172,8 @@ Yogurt 账号掉线，已停止进程
 
 ## 7. 多账号
 
-- 每个账号独立目录：`data/accounts/<QQ号>/`（`config.json`、`app-info.json`、`session-store.json`、`qrcode.png`、`yogurt.exe`）。
+- 每个账号独立目录：`data/accounts/<QQ号>/`（`config.json`、`app-info.json`、`session-store.json`、`qrcode.png`、该平台二进制）。
+- 二进制文件名按平台：Windows `yogurt.exe`，Linux/macOS `yogurt.kexe`（或 `yogurt`）——识别、启动、更新、备份都用同一套映射。
 - 端口自动分配、冲突校验；账号配置里的 `milky.http.port` 与面板记录双向同步。
 - 卡片上「配置」可以直接编辑该账号的 `config.json`（JSON 校验 + 保存后提示重启生效）。
 - 「删除」会把账号目录移动到 `data/trash/`，不直接销毁。
@@ -156,47 +185,63 @@ Yogurt 账号掉线，已停止进程
 ```
 yogurt-shell/
 ├── server.js                  # 入口：装配各模块 + HTTP 服务 + 定时任务
-├── start.cmd                  # 双击启动
-├── stop.cmd                   # 优雅停止（先停账号，再退面板）
+├── start.cmd / stop.cmd       # Windows 启动 / 优雅停止
+├── start.sh  / stop.sh        # Linux、macOS 启动 / 优雅停止
 ├── src/
 │   ├── store.js               # 配置读写（data/config.json）、路径、端口分配
 │   ├── logbus.js              # 每账号环形日志缓冲 + 落盘轮转 + 事件推送
 │   ├── supervisor.js          # 进程守护：启停/杀进程树/状态机/探活/掉线判定
-│   ├── metrics.js             # CPU/内存采样聚合与历史曲线
+│   ├── metrics.js             # 采样聚合与历史曲线（Windows/Linux 两种后端）
+│   ├── sampler-linux.js       # 读 /proc 的实现 + 可单测的解析函数
+│   ├── procs.js               # 跨平台进程枚举 / 结束进程 / 找 PowerShell
+│   ├── platform.js            # 平台差异：二进制名、发版包名、可执行位
 │   ├── notifier.js            # 事件记录 + 邮件内容组装 + 去重
 │   ├── smtp.js                # 内置 SMTP 客户端
 │   ├── updater.js             # GitHub release 检查/下载/校验/安装
 │   ├── zipx.js                # 内置 zip 解压（stored/deflate）
 │   ├── accounts.js            # 账号创建/导入/改端口/删除/配置文本
 │   ├── http.js                # 路由、SSE 实时推送、静态文件、令牌校验
-│   ├── winproc.js             # 进程枚举 / 遗留进程清理
 │   └── ansi.js                # 剥离 ANSI 颜色、识别日志等级
 ├── scripts/
-│   ├── win-sampler.ps1        # 常驻采样器（NDJSON 输出）
-│   └── install-autostart.ps1  # 加进「启动」文件夹，开机自启
+│   ├── win-sampler.ps1               # Windows 常驻采样器（NDJSON 输出）
+│   ├── install-autostart.ps1         # Windows：加进「启动」文件夹
+│   ├── install-autostart-systemd.sh  # Linux：systemd 用户服务
+│   └── selftest.js                   # 平台无关自测（node scripts/selftest.js）
 ├── public/                    # 面板前端（原生 JS，无框架）
+├── docs/                      # 截图
 └── data/                      # 运行时数据（不进 git）
     ├── config.json            # 面板、账号、邮件、更新、判定参数
     ├── accounts/<QQ号>/       # 每账号的 yogurt 数据目录
     ├── logs/<QQ号>.log        # 捕获的日志（轮转）
-    ├── dist/<tag>/            # 下载解压后的 yogurt.exe
+    ├── dist/<tag>/            # 下载解压后的 yogurt 二进制
     ├── updates/               # 下载的 zip
-    ├── backups/               # 更新前的旧 exe
-    ├── runtime/panel.pid      # 面板进程号（stop.cmd 用）
-    └── events.jsonl           # 事件流水（面板「事件」里的来源）
+    ├── backups/               # 更新前的旧二进制
+    ├── runtime/panel.pid      # 面板进程号
+    └── events.jsonl           # 事件流水
 ```
 
 ---
 
 ## 9. 开机自启
 
+**Windows**
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File E:\lagrangeV2\yogurt-shell\scripts\install-autostart.ps1
 ```
 
-会在当前用户的「启动」文件夹里创建一个指向 `start.cmd` 的快捷方式（窗口最小化）。不想要就删掉那个 `.lnk`。
+在「启动」文件夹里创建一个指向 `start.cmd` 的快捷方式（窗口最小化）。不想要就删掉那个 `.lnk`。
+想「不登录也跑」就用「任务计划程序」建登录时/开机时触发的任务，操作填 `start.cmd`，起始目录填项目目录。
 
-想「不登录也跑」的话，用「任务计划程序」建一个登录时/开机时触发的任务，操作填 `start.cmd`，起始目录填项目目录。
+**Linux（systemd 用户服务）**
+
+```bash
+bash scripts/install-autostart-systemd.sh
+# 卸载
+systemctl --user disable --now yogurt-shell && rm ~/.config/systemd/user/yogurt-shell.service
+# 不想等到登录才跑
+sudo loginctl enable-linger $USER
+```
 
 ---
 
@@ -212,23 +257,47 @@ powershell -ExecutionPolicy Bypass -File E:\lagrangeV2\yogurt-shell\scripts\inst
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错 |
+| 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错（会明确提示 EADDRINUSE） |
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |
 | 更新失败 `fetch failed` | `github.com` 不通，填镜像前缀（如 `https://gh-proxy.com/`），或改用「本地 zip 安装」 |
-| 更新后起不来 | `data/backups/` 里有旧 exe，覆盖回账号目录即可回滚；再点「启动」 |
-| 更新完端口/协议不对 | 新版本可能改了配置项，面板「配置」里对照官方文档调整 |
+| 更新失败「压缩包里没有…」 | 下错了平台的包；面板默认按平台自动选包，`update.asset` 别乱填 |
+| 更新后起不来 | `data/backups/` 里有旧二进制，覆盖回账号目录即可回滚；再点「启动」 |
+| Linux 上 `./start.sh` 报 `bad interpreter` | 脚本被 Windows 改成了 CRLF：`sed -i 's/\r$//' start.sh stop.sh scripts/*.sh` |
+| Linux 上提示 Permission denied | 二进制没执行位：`chmod +x data/accounts/*/yogurt*`；面板更新时会自动补 |
 | 日志里全是聊天内容 | 日志抽屉点「隐藏聊天」，或设置里把 `coreLogLevel` 调成 `INFO`/`WARN` |
-| 面板关掉后 yogurt 也跟着停了 | 这是设计：面板是守护进程，退出时会主动停掉所有账号，避免留下没人监管的 yogurt。想常驻就用后台启动方式或 `scripts/install-autostart.ps1` |
-| 想停掉所有账号但保留面板 | 面板上逐个点「停止」；`stop.cmd` 是连面板一起优雅退出 |
-| 面板被强杀后 yogurt 还在 | 重新启动面板会自动清理；或手动 `taskkill /IM yogurt.exe /F` |
+| 面板关掉后 yogurt 也跟着停了 | 这是设计：面板是守护进程，退出时会主动停掉所有账号，避免留下没人监管的 yogurt。想常驻用 systemd / 后台启动 |
+| 想停掉所有账号但保留面板 | 面板上逐个点「停止」；`stop.cmd` / `./stop.sh` 是连面板一起优雅退出 |
+| 面板被强杀后 yogurt 还在 | 重新启动面板会自动清理；或手动 `taskkill /IM yogurt.exe /F` / `pkill -f yogurt.kexe` |
+| 用 Docker 跑 yogurt 怎么办 | 面板管的是**进程**，不是容器。要么把面板和 yogurt 装进同一个镜像/容器（入口改成 panel → 它再拉起 yogurt），要么让面板直接管理宿主上的二进制。纯容器内的 yogurt，掉线时面板 kill 不到，需要改造成 `docker stop` 方案 |
 
 ---
 
-## 12. 设计取舍（为什么这样写）
+## 12. 自测
+
+不需要装 yogurt、不需要联网，验证平台映射、`/proc` 解析、内置 zip、版本比较、进程识别等逻辑：
+
+```bash
+node scripts/selftest.js      # 或 npm run selftest
+```
+
+```
+[1] 平台映射（exe 名字 / 发版包名）   ok
+[2] Linux /proc 解析                 ok（用假 /proc 目录跑解析）
+[3] 内置 zip 解压（更新包用）         ok（stored + deflate）
+[4] 版本比较（更新判定）              ok
+[5] 进程识别                         ok
+[6] 基础工具                         ok
+全部通过：14 项
+```
+
+---
+
+## 13. 设计取舍（为什么这样写）
 
 - **零依赖**：这类「看家」工具最怕装依赖失败/被墙。SMTP 客户端、zip 解压、SSE、采样都是用内置模块手写的。
+- **跨平台只隔离在三个文件**：`platform.js`（二进制名/包名/执行位）、`procs.js`（进程枚举与结束）、`metrics.js` 的采样后端。业务逻辑和 UI 完全共用。
 - **不需要 Yogurt 配合**：不上插件、不改协议端，纯外部观察（stdout + HTTP 探活），换任何 Milky 协议端都还能用（改一下探活路径即可）。
 - **宁可停不可撞**：掉线后不动进程树以外的任何东西，不自动重连，交给人判断。
-- **状态都在 data/**：换机器只要拷 `data/` 就能整体搬家（`dist/` 和 `backups/` 可以不拷）。
+- **状态都在 data/**：换机器只要拷 `data/` 就能整体搬家（`dist/` 和 `backups/` 可以不拷；账号目录里的二进制要换成本平台的）。

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const store = require('./store');
+const platform = require('./platform');
 const { extractZip } = require('./zipx');
 
 const UA = 'yogurt-shell/1.0 (+local panel)';
@@ -61,12 +62,18 @@ class Updater {
         .readdirSync(store.PATHS.dist, { withFileTypes: true })
         .filter((d) => d.isDirectory())
         .map((d) => {
-          const exe = path.join(store.PATHS.dist, d.name, 'yogurt.exe');
-          return { tag: d.name, dir: path.join(store.PATHS.dist, d.name), hasExe: fs.existsSync(exe) };
+          const dir = path.join(store.PATHS.dist, d.name);
+          const file = platform.findBinary(dir);
+          return { tag: d.name, dir, hasExe: Boolean(file), bin: file ? path.basename(file) : null };
         });
     } catch {
       return [];
     }
+  }
+
+  assetName() {
+    const cfg = store.getConfig();
+    return (cfg.update.asset || '').trim() || platform.assetFor();
   }
 
   // 面板里下载过的 dist 版本（最新那个）
@@ -106,7 +113,7 @@ class Updater {
         headers: { Accept: 'application/vnd.github+json' },
       });
       const json = await res.json();
-      const assetName = cfg.update.asset || 'yogurt-windows-x64.zip';
+      const assetName = this.assetName();
       const asset = (json.assets || []).find((a) => a.name === assetName) || null;
       const current = this.currentVersion();
       const latest = {
@@ -114,6 +121,7 @@ class Updater {
         name: json.name,
         publishedAt: json.published_at,
         notes: (json.body || '').split('\n').slice(0, 12).join('\n'),
+        assets: (json.assets || []).map((a) => ({ name: a.name, size: a.size })),
         asset: asset ? { name: asset.name, size: asset.size, digest: asset.digest, url: asset.browser_download_url } : null,
         hasUpdate: current ? compareVersions(json.tag_name, current) > 0 : true,
         current,
@@ -176,33 +184,39 @@ class Updater {
     fs.rmSync(dest, { recursive: true, force: true });
     fs.mkdirSync(dest, { recursive: true });
     extractZip(zipPath, dest);
-    const exe = path.join(dest, 'yogurt.exe');
-    if (!fs.existsSync(exe)) throw new Error('压缩包里没有 yogurt.exe（可能是其它平台的包）');
-    return { tag: safeTag, dir: dest, exe };
+    const bin = platform.findBinary(dest);
+    if (!bin) {
+      throw new Error(`压缩包里没有 ${platform.binNames().join(' / ')}（可能下错了平台的包，当前是 ${platform.label()}）`);
+    }
+    platform.ensureExecutable(bin);
+    return { tag: safeTag, dir: dest, exe: bin };
   }
 
-  // 把 dist 里的 exe 装到账号目录（优先硬链接，省磁盘；不行就复制）
+  // 把 dist 里的可执行文件装到账号目录（优先硬链接，省磁盘；不行就复制）
   installExeForAccount(account, distExe) {
     const dir = store.accountDir(account);
     fs.mkdirSync(dir, { recursive: true });
-    const target = path.join(dir, 'yogurt.exe');
+    const target = path.join(dir, path.basename(distExe));
     const backupDir = store.PATHS.backups;
     fs.mkdirSync(backupDir, { recursive: true });
-    if (fs.existsSync(target)) {
+    const current = platform.findBinary(dir);
+    if (current) {
       const oldVersion = this.currentVersion() || 'unknown';
-      const backup = path.join(backupDir, `${account.id}-${oldVersion}-${Date.now()}.exe`);
+      const backup = path.join(backupDir, `${account.id}-${oldVersion}-${Date.now()}${path.extname(current)}`);
       try {
-        fs.copyFileSync(target, backup);
+        fs.copyFileSync(current, backup);
       } catch {}
-      fs.rmSync(target, { force: true });
+      fs.rmSync(current, { force: true });
     }
+    let linked = false;
     try {
       fs.linkSync(distExe, target);
-      return { target, linked: true };
+      linked = true;
     } catch {
       fs.copyFileSync(distExe, target);
-      return { target, linked: false };
     }
+    platform.ensureExecutable(target);
+    return { target, linked };
   }
 
   async install({ zipPath, tag, restartRunning = true }) {

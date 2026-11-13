@@ -28,7 +28,7 @@ const DEFAULT_CONFIG = {
     token: '',
   },
   yogurt: {
-    // 留空表示用「账号目录里的 yogurt.exe」
+    // 留空表示用「账号目录里的可执行文件」（Windows: yogurt.exe / Linux: yogurt.kexe）
     exePath: '',
     probe: {
       intervalMs: 15000, // 探活间隔
@@ -74,7 +74,8 @@ const DEFAULT_CONFIG = {
   },
   update: {
     repo: 'SaltifyDev/yogurt-releases',
-    asset: 'yogurt-windows-x64.zip',
+    // 留空 = 按当前平台/架构自动选择（windows-x64 / linux-x64 / linux-arm64 / macos-arm64）
+    asset: '',
     // GitHub 直连不通时的前缀镜像，例如 https://ghfast.top/
     mirrorPrefix: '',
     autoCheckMinutes: 0,
@@ -131,6 +132,22 @@ function load() {
   }
   cached = mergeDefaults(DEFAULT_CONFIG, raw);
   if (!Array.isArray(cached.accounts)) cached.accounts = [];
+  // 账号目录统一用正斜杠存，Windows 的 data/ 拷到 Linux 也能直接用
+  cached.accounts = cached.accounts.map((a) => ({
+    ...a,
+    dir: String(a.dir || `accounts/${a.id}`).replace(/\\/g, '/'),
+  }));
+  // 从别的平台搬过来的配置里可能残留着那个平台的包名，这里清掉让它按本机自动选
+  const AUTO_ASSETS = [
+    'yogurt-windows-x64.zip',
+    'yogurt-linux-x64.zip',
+    'yogurt-linux-arm64.zip',
+    'yogurt-macos-arm64.zip',
+  ];
+  const platformAsset = require('./platform').assetFor();
+  if (cached.update && AUTO_ASSETS.includes(cached.update.asset) && cached.update.asset !== platformAsset) {
+    cached.update.asset = '';
+  }
   return cached;
 }
 

@@ -640,7 +640,7 @@ function addAccountModal() {
       <div class="field">
         <label>现有 yogurt 目录（绝对路径）*</label>
         <input class="input" id="i-dir" placeholder="例如 E:\\lagrangeV2\\yogurt-windows-x64 (1)" />
-        <div class="hint">会复制 config.json / app-info.json / session-store*.json / yogurt.exe 到新账号目录，原目录不动。</div>
+        <div class="hint">会复制 config.json / app-info.json / session-store*.json / 可执行文件到新账号目录，原目录不动。</div>
       </div>
       <div class="field"><label>显示名称</label><input class="input" id="i-name" placeholder="留空则自动生成" /></div>
       <div class="field"><label class="check"><input type="checkbox" id="i-autostart" checked /> 面板启动时自动拉起</label></div>
@@ -837,7 +837,7 @@ function updateModal() {
 
     <div class="section">
       <h3>更新</h3>
-      <div class="desc">从 GitHub Releases 下载 yogurt-windows-x64.zip，校验 sha256 后解压、替换各账号目录里的 yogurt.exe（旧 exe 备份到 data/backups）。更新会先停掉正在运行的账号，装完自动拉起。</div>
+      <div class="desc">从 GitHub Releases 下载 <span class="mono">${esc((u.asset || 'yogurt-<平台>.zip'))}</span>，校验 sha256 后解压、替换各账号目录里的可执行文件（旧文件备份到 data/backups）。更新会先停掉正在运行的账号，装完自动拉起。</div>
       <div class="field"><label>下载镜像前缀（github.com 直连不通时自动使用）</label><input class="input" id="u-mirror" value="${esc((state.settings.update && state.settings.update.mirrorPrefix) || '')}" placeholder="https://gh-proxy.com/" /></div>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="u-check">检查更新</button>

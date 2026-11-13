@@ -131,6 +131,7 @@ function createServer(ctx) {
         current: updater.currentVersion(),
         distTag: updater.distTag(),
         running: updater.runningVersions(),
+        asset: updater.assetName(),
         latest: updater.state.latest,
         error: updater.state.error,
         lastCheck: updater.state.lastCheck,
@@ -361,7 +362,11 @@ function createServer(ctx) {
       const body = await readJson(req);
       let latest = updater.state.latest;
       if (!latest || body.refresh) latest = await updater.check({ force: true });
-      if (!latest.asset) return sendJson(res, 400, { error: '最新 release 里没有 ' + (store.getConfig().update.asset || 'yogurt-windows-x64.zip') });
+      if (!latest.asset) {
+        return sendJson(res, 400, {
+          error: `最新 release 里没有 ${updater.assetName()}（可用：${(latest.assets || []).map((a) => a.name).join(', ') || '未知'}）`,
+        });
+      }
       const file = await updater.download(latest.asset.url, latest.asset.name, latest.asset.digest);
       const result = await updater.install({ zipPath: file.file, tag: latest.tag });
       broadcast({ type: 'accounts' });

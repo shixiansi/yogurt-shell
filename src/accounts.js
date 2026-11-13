@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const store = require('./store');
+const platform = require('./platform');
 
 const SIGNS = 'https://sign.shixiansi.pw/laptop/';
 
@@ -37,9 +38,11 @@ function newestDistExe() {
     const dirs = fs
       .readdirSync(store.PATHS.dist, { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => path.join(store.PATHS.dist, d.name, 'yogurt.exe'))
-      .filter((p) => fs.existsSync(p))
-      .map((p) => ({ p, t: fs.statSync(p).mtimeMs }))
+      .map((d) => {
+        const file = platform.findBinary(path.join(store.PATHS.dist, d.name));
+        return file ? { p: file, t: fs.statSync(file).mtimeMs } : null;
+      })
+      .filter(Boolean)
       .sort((a, b) => b.t - a.t);
     return dirs.length ? dirs[0].p : null;
   } catch {
@@ -49,35 +52,43 @@ function newestDistExe() {
 
 function linkOrCopy(src, dest) {
   fs.rmSync(dest, { force: true });
+  let mode = 'copy';
   try {
     fs.linkSync(src, dest);
-    return 'link';
+    mode = 'link';
   } catch {
     fs.copyFileSync(src, dest);
-    return 'copy';
   }
+  platform.ensureExecutable(dest);
+  return mode;
 }
 
 function ensureExe(account, { sourceDir } = {}) {
   const dir = store.accountDir(account);
-  const target = path.join(dir, 'yogurt.exe');
-  if (fs.existsSync(target)) return { ok: true, path: target, mode: 'existing' };
+  const existing = platform.findBinary(dir);
+  if (existing) return { ok: true, path: existing, mode: 'existing' };
   const cfg = store.getConfig();
-  // 优先级：导入源目录里原有的 exe（保持现状）> 全局指定 exe > 面板已下载的最新 dist
+  // 优先级：导入源目录里原有的可执行文件（保持现状）> 全局指定路径 > 面板已下载的最新 dist
   const candidates = [];
-  if (sourceDir) candidates.push(path.join(sourceDir, 'yogurt.exe'));
+  if (sourceDir) {
+    const fromSource = platform.findBinary(sourceDir);
+    if (fromSource) candidates.push(fromSource);
+  }
   if (cfg.yogurt.exePath) {
-    candidates.push(path.isAbsolute(cfg.yogurt.exePath) ? cfg.yogurt.exePath : path.join(store.DATA_DIR, cfg.yogurt.exePath));
+    const p = path.isAbsolute(cfg.yogurt.exePath) ? cfg.yogurt.exePath : path.join(store.DATA_DIR, cfg.yogurt.exePath);
+    candidates.push(p);
   }
   const dist = newestDistExe();
   if (dist) candidates.push(dist);
   for (const src of candidates) {
     if (src && fs.existsSync(src)) {
+      // 用源文件名（windows 是 yogurt.exe，其它平台是 yogurt.kexe/yogurt），保持跨平台一致
+      const target = path.join(dir, path.basename(src));
       const mode = linkOrCopy(src, target);
       return { ok: true, path: target, mode, from: src };
     }
   }
-  return { ok: false, path: target, mode: 'missing' };
+  return { ok: false, path: path.join(dir, platform.defaultBinName()), mode: 'missing' };
 }
 
 function copyIfExists(from, to) {

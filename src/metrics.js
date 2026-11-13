@@ -6,29 +6,33 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const store = require('./store');
+const { findPowerShell } = require('./procs');
+const procfs = require('./sampler-linux');
 
 const CORES = Math.max(1, os.cpus().length);
 const HISTORY = 90; // 3s * 90 = 4.5 分钟
 
-function findPwsh() {
-  const { findPowerShell } = require('./winproc');
-  return findPowerShell();
-}
-
-// 采样器常驻一个 PowerShell 进程，每 3s 输出一行 JSON（避免每轮都拉起新进程）
+// 采样后端：
+//   Windows → 常驻一个 PowerShell 进程，每 3s 输出一行 NDJSON（Get-Process）
+//   Linux   → 直接读 /proc/<pid>/{stat,status,fd}，无子进程
+// 两者输出同一种结构，交给 ingest() 统一算百分比、存历史。
 class Metrics extends EventEmitter {
   constructor() {
     super();
     this.setMaxListeners(0);
+    this.mode = process.platform === 'win32' ? 'powershell' : process.platform === 'linux' ? 'procfs' : 'unsupported';
     this.child = null;
+    this.timer = null;
     this.buf = '';
     this.pids = [];
-    this.prev = new Map(); // pid -> {cpu, t}
-    this.history = new Map(); // accountId -> [{t, cpu, mem}]
-    this.last = new Map(); // accountId -> {cpu, mem, threads, handles, t}
     this.pidToAccount = new Map();
+    this.prev = new Map(); // pid -> {cpuSeconds, t}
+    this.history = new Map(); // accountId -> [{t, cpu, mem}]
+    this.last = new Map(); // accountId -> sample
     this.restartTimer = null;
     this.failures = 0;
+    this.stopped = false;
+    this.disabled = null;
   }
 
   setAccounts(snapshots) {
@@ -42,7 +46,7 @@ class Metrics extends EventEmitter {
     }
     const changed = pids.length !== this.pids.length || pids.some((p, i) => p !== this.pids[i]);
     this.pids = pids;
-    if (changed) this.writePids();
+    if (changed && this.mode === 'powershell') this.writePids();
   }
 
   writePids() {
@@ -56,13 +60,31 @@ class Metrics extends EventEmitter {
   }
 
   start() {
-    if (process.platform !== 'win32') {
-      this.disabled = 'CPU/内存采样目前只在 Windows 下实现';
-      return;
-    }
+    if (this.mode === 'powershell') return this.startWindows();
+    if (this.mode === 'procfs') return this.startProcfs();
+    this.disabled = `当前平台（${process.platform}）暂未实现资源采样`;
+  }
+
+  // ---- Linux ----
+  startProcfs() {
+    if (this.timer) return;
+    const tick = () => {
+      if (this.stopped) return;
+      try {
+        this.ingest(procfs.sampleMany(this.pids));
+      } catch (err) {
+        this.disabled = '采样失败：' + err.message;
+      }
+    };
+    tick();
+    this.timer = setInterval(tick, 3000);
+  }
+
+  // ---- Windows ----
+  startWindows() {
     if (this.child) return;
     this.writePids();
-    const exe = findPwsh();
+    const exe = findPowerShell();
     const script = path.join(store.ROOT, 'scripts', 'win-sampler.ps1');
     let child;
     try {
@@ -93,7 +115,7 @@ class Metrics extends EventEmitter {
       while ((idx = this.buf.indexOf('\n')) >= 0) {
         const line = this.buf.slice(0, idx).trim();
         this.buf = this.buf.slice(idx + 1);
-        if (line) this.onSample(line);
+        if (line) this.onSamplerLine(line);
       }
     });
 
@@ -112,16 +134,21 @@ class Metrics extends EventEmitter {
     });
   }
 
-  onSample(line) {
+  onSamplerLine(line) {
     let payload;
     try {
       payload = JSON.parse(line);
     } catch {
       return;
     }
-    this.disabled = null;
+    this.ingest(payload);
+  }
+
+  // ---- 统一样本处理 ----
+  ingest(payload) {
     const t = payload.t || Date.now();
     const items = Array.isArray(payload.items) ? payload.items : [];
+    this.disabled = null;
     for (const item of items) {
       const accountId = this.pidToAccount.get(item.pid);
       if (!accountId) continue;
@@ -129,15 +156,15 @@ class Metrics extends EventEmitter {
         this.prev.delete(item.pid);
         continue;
       }
+      const cpuSeconds = Number(item.cpuSeconds != null ? item.cpuSeconds : item.cpu) || 0;
       const prev = this.prev.get(item.pid);
       let cpuPercent = 0;
       if (prev && t > prev.t) {
-        const deltaSec = (item.cpu - prev.cpu) / 1;
         const wall = (t - prev.t) / 1000;
-        cpuPercent = wall > 0 ? (deltaSec / wall) * 100 / CORES : 0;
+        if (wall > 0) cpuPercent = ((cpuSeconds - prev.cpuSeconds) / wall) * 100 / CORES;
       }
-      if (cpuPercent < 0) cpuPercent = 0;
-      this.prev.set(item.pid, { cpu: item.cpu, t });
+      if (cpuPercent < 0 || !Number.isFinite(cpuPercent)) cpuPercent = 0;
+      this.prev.set(item.pid, { cpuSeconds, t });
       const sample = {
         t,
         cpu: Number(cpuPercent.toFixed(1)),
@@ -167,6 +194,8 @@ class Metrics extends EventEmitter {
   stop() {
     this.stopped = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
     if (this.child) {
       try {
         this.child.kill();
