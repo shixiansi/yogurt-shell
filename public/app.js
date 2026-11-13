@@ -655,6 +655,7 @@ function addAccountModal() {
       <div class="field" style="margin-top:12px">
         <label class="check"><input type="checkbox" id="f-autostart" checked /> 面板启动时自动拉起</label>
         <div class="hint">PC 协议首次登录会把二维码/链接打印到日志里，可在「日志」抽屉里看，或点卡片上的「二维码」。</div>
+        <div class="hint">协议版本选 <span class="mono">custom</span> 时，yogurt 需要账号目录里有 <span class="mono">app-info.json</span>；面板会自动从内置模板补一份（缺了会导致 yogurt 启动即崩溃）。</div>
       </div>
       <div class="row" style="margin-top:14px"><button class="btn primary" id="f-submit">创建账号</button></div>
     </div>
@@ -1172,6 +1173,7 @@ function configModal(acc) {
     `${acc.name} · config.json`,
     `
     <div class="hint">直接编辑账号目录里的 config.json。保存后会自动同步 milky.http.port 到面板。</div>
+    <div class="hint"><span class="mono">protocol.version</span> 为 <span class="mono">custom</span> 时必须存在 <span class="mono">app-info.json</span>（面板会在启动该账号时自动从内置模板补齐）；也可以改成内置版本：Linux <span class="mono">46494</span>/<span class="mono">39038</span>、Mac <span class="mono">52194</span>/<span class="mono">52892</span>。</div>
     <textarea class="input" id="c-text" spellcheck="false">加载中…</textarea>
     <div class="row"><button class="btn primary" id="c-save">保存</button>
     <span class="hint" id="c-msg"></span></div>

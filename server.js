@@ -12,6 +12,7 @@ const { Notifier } = require('./src/notifier');
 const { Updater } = require('./src/updater');
 const { createServer } = require('./src/http');
 const { teeConsole } = require('./src/console-tee');
+const accountsMod = require('./src/accounts');
 
 function arg(name, fallback) {
   const idx = process.argv.indexOf('--' + name);
@@ -210,6 +211,12 @@ async function main() {
   try {
     fs.writeFileSync(path.join(store.PATHS.runtime, 'panel.pid'), String(process.pid), 'utf8');
   } catch {}
+
+  const seeded = accountsMod.seedTemplate();
+  if (seeded.seeded) {
+    console.log(`  app-info.json 模板已从 assets 初始化：${seeded.path}`);
+    console.log('  （protocol.version = custom 的账号需要它，之前缺这个文件会导致 yogurt 启动即 SIGABRT）');
+  }
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

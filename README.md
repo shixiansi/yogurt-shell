@@ -182,6 +182,7 @@ Yogurt 账号掉线，已停止进程
 
 - 每个账号独立目录：`data/accounts/<QQ号>/`（`config.json`、`app-info.json`、`session-store.json`、`qrcode.png`、该平台二进制）。
 - 二进制文件名按平台：Windows `yogurt.exe`，Linux/macOS `yogurt.kexe`（或 `yogurt`）——识别、启动、更新、备份都用同一套映射。
+- **`app-info.json`**：`protocol.version` 为 `custom` 时 yogurt 必须在账号目录里读到它，否则启动即 `IllegalStateException: 未在 app-info.json 下找到自定义 AppInfo 文件` 然后 SIGABRT。仓库里自带 `assets/app-info.json`，面板启动时自动写入 `data/template/`，创建/启动账号时缺了就自动补（日志里会有一行 `已自动从 … 补齐`）。想换协议版本就改 `protocol.version` 为内置值：Linux `46494` / `39038`，Mac `52194` / `52892`，此时不需要这个文件。
 - 端口自动分配、冲突校验；账号配置里的 `milky.http.port` 与面板记录双向同步。
 - 卡片上「配置」可以直接编辑该账号的 `config.json`（JSON 校验 + 保存后提示重启生效）。
 - 「删除」会把账号目录移动到 `data/trash/`，不直接销毁。
@@ -218,6 +219,7 @@ yogurt-shell/
 │   ├── install-autostart-systemd.sh  # Linux：systemd 用户服务
 │   └── selftest.js                   # 平台无关自测（node scripts/selftest.js）
 ├── public/                    # 面板前端（原生 JS，无框架）
+├── assets/app-info.json       # custom 协议的协议信息模板（全新 clone 也能用 custom）
 ├── docs/                      # 截图
 └── data/                      # 运行时数据（不进 git）
     ├── config.json            # 面板、账号、邮件、更新、判定参数
@@ -287,6 +289,7 @@ sudo loginctl enable-linger $USER
 | --- | --- |
 | 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错（会明确提示 EADDRINUSE） |
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
+| 启动就崩：`未在 app-info.json 下找到自定义 AppInfo 文件` | `protocol.version` 是 `custom` 但账号目录里没有 `app-info.json`。新版会自动从 `assets/app-info.json` 补；旧版手动补：`cp assets/app-info.json data/accounts/<QQ号>/`，或把 `protocol.version` 改成内置版本（Linux `46494`/`39038`，Mac `52194`/`52892`） |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |
 | 改成 `0.0.0.0` 没效果、日志里还是 127.0.0.1 | 见上面「两个 host 别搞混」：① 面板 host/port 只在启动时读，改完要重启面板；② 接管后生效的是 `data/accounts/<QQ号>/config.json`，旧目录那份已经作废；③ 日志里的 127.0.0.1 是客户端来源 IP，本来就不会变。以账号卡片的「实际监听」和 yogurt 的 `Listen Address` 为准 |
@@ -320,7 +323,8 @@ node scripts/selftest.js      # 或 npm run selftest
 [6] 基础工具                         ok
 [7] 采样聚合                         ok
 [8] 实际监听地址解析                 ok（netstat / /proc/net/tcp / 配置不匹配提示）
-全部通过：19 项
+[9] app-info.json 模板与自动补齐     ok
+全部通过：22 项
 ```
 
 ---

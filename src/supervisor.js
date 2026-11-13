@@ -160,6 +160,25 @@ class Supervisor extends EventEmitter {
     const dir = store.accountDir(account);
     fs.mkdirSync(dir, { recursive: true });
 
+    // protocol.version = custom 时 yogurt 必须在账号目录里找到 app-info.json，否则直接 SIGABRT
+    const accountConfig = store.readAccountConfig(account) || {};
+    const protocolVersion = String((accountConfig.protocol && accountConfig.protocol.version) || '').trim();
+    if (protocolVersion.toLowerCase() === 'custom') {
+      const { ensureAppInfo } = require('./accounts');
+      const appInfo = path.join(dir, 'app-info.json');
+      const healed = ensureAppInfo(account);
+      if (!healed) {
+        throw new Error(
+          `账号目录缺少 app-info.json（protocol.version = custom 时必需）：${appInfo}。` +
+            '修法二选一：① 卡片「配置」里把 protocol.version 改成内置版本（Linux 46494 或 39038，Mac 52194 或 52892）；' +
+            '② 把 app-info.json 放进账号目录（仓库自带模板在 assets/app-info.json，面板也会自动补）'
+        );
+      }
+      if (healed !== appInfo) {
+        this.pushLog(account, 'WARN', `[shell] 账号缺少 app-info.json，已自动从 ${healed} 补齐`);
+      }
+    }
+
     const env = { ...process.env };
 
     const child = spawn(exe, [], {
@@ -223,6 +242,8 @@ class Supervisor extends EventEmitter {
       } else {
         r.status = 'crashed';
         r.reason = `进程异常退出（code=${code}${signal ? ' signal=' + signal : ''}）`;
+        const hint = this.diagnoseCrash(account);
+        if (hint) r.reason += '｜' + hint;
         this.emitIncident(account, {
           type: 'crash',
           title: 'Yogurt 进程异常退出',
@@ -237,8 +258,29 @@ class Supervisor extends EventEmitter {
     return this.snapshot(account);
   }
 
-  maybeAutoRestart(account, r) {
-    const cfg = this.cfg();
+  // 根据最近的日志猜崩溃原因，给面板/邮件一条能照着做的提示
+  diagnoseCrash(account) {
+    try {
+      const text = this.bus
+        .tail(account.id, 80)
+        .map((line) => line.text)
+        .join('\n');
+      if (/app-info\.json/i.test(text)) {
+        return '提示：账号目录缺少 app-info.json（protocol.version = custom 时必需）——改成内置版本，或放一份 app-info.json';
+      }
+      if (/Address already in use|EADDRINUSE|端口.*占用/i.test(text)) {
+        return '提示：端口被占用，改 milky.http.port 或结束占用该端口的进程';
+      }
+      if (/签名|signing|signApi/i.test(text) && /(失败|错误|error|invalid|异常)/i.test(text)) {
+        return '提示：签名服务可能不可用，检查 security.signApiUrl / pcLagrangeSignToken';
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  maybeAutoRestart(account, r) {    const cfg = this.cfg();
     const enabled = account.autoRestart === true || (account.autoRestart === undefined && cfg.yogurt.autoRestart);
     if (!enabled || this.shuttingDown) return;
     if (r.restartTimer) clearTimeout(r.restartTimer);

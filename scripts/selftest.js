@@ -330,6 +330,28 @@ check('配置写了 0.0.0.0 但只监听回环 → 给出提示', () => {
   if (!portBad || !/端口/.test(portBad)) throw new Error('应当提示端口不一致');
 });
 
+// ---------- 9. app-info.json（custom 协议必需） ----------
+console.log('\n[9] app-info.json 模板与自动补齐');
+check('仓库自带模板存在且格式正确', () => {
+  const asset = path.join(__dirname, '..', 'assets', 'app-info.json');
+  if (!fs.existsSync(asset)) throw new Error('缺少 assets/app-info.json（custom 协议会启动失败）');
+  const json = JSON.parse(fs.readFileSync(asset, 'utf8'));
+  if (!json.Os || !json.CurrentVersion) throw new Error('模板缺 Os / CurrentVersion');
+  eq(typeof json.AppId, 'number');
+});
+check('ensureAppInfo 能补到临时账号目录', () => {
+  const accounts = require('../src/accounts');
+  const dir = tmpDir('ys-acc-');
+  const account = { id: '100000001', dir }; // dir 是绝对路径，accountDir 会原样用
+  const from = accounts.ensureAppInfo(account);
+  if (!from) throw new Error('没找到任何 app-info 来源');
+  const target = path.join(dir, 'app-info.json');
+  if (!fs.existsSync(target)) throw new Error('没有复制到账号目录');
+  const json = JSON.parse(fs.readFileSync(target, 'utf8'));
+  if (!json.CurrentVersion) throw new Error('复制后的内容不完整');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // ---------- 汇总 ----------
 console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
 if (failures.length) {

@@ -101,19 +101,44 @@ function copyIfExists(from, to) {
   return false;
 }
 
+// app-info.json（protocol.version = custom 时 yogurt 必需）的候选来源，按优先级
+function appInfoSources(sourceDir) {
+  const list = [];
+  if (sourceDir) list.push(path.join(sourceDir, 'app-info.json'));
+  list.push(path.join(store.PATHS.template, 'app-info.json'));
+  list.push(path.join(store.ROOT, 'assets', 'app-info.json'));
+  return list;
+}
+
+// 把仓库自带的模板放进 data/template，保证全新 clone 也能用 custom 协议
+function seedTemplate() {
+  const target = path.join(store.PATHS.template, 'app-info.json');
+  if (fs.existsSync(target)) return { seeded: false, path: target };
+  const asset = path.join(store.ROOT, 'assets', 'app-info.json');
+  if (!fs.existsSync(asset)) return { seeded: false, path: null };
+  try {
+    fs.mkdirSync(store.PATHS.template, { recursive: true });
+    fs.copyFileSync(asset, target);
+    return { seeded: true, path: target };
+  } catch {
+    return { seeded: false, path: null };
+  }
+}
+
+// 返回实际使用的来源路径（null = 没找到）
 function ensureAppInfo(account, sourceDir) {
   const dir = store.accountDir(account);
   const target = path.join(dir, 'app-info.json');
-  if (fs.existsSync(target)) return;
-  const copies = [];
-  if (sourceDir) copies.push(path.join(sourceDir, 'app-info.json'));
-  copies.push(path.join(store.PATHS.template, 'app-info.json'));
-  for (const c of copies) {
-    if (fs.existsSync(c)) {
-      fs.copyFileSync(c, target);
-      return;
-    }
+  if (fs.existsSync(target)) return target;
+  for (const candidate of appInfoSources(sourceDir)) {
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      fs.mkdirSync(dir, { recursive: true });
+      fs.copyFileSync(candidate, target);
+      return candidate;
+    } catch {}
   }
+  return null;
 }
 
 function validateUin(uin) {
@@ -299,6 +324,9 @@ function writeConfigText(id, text) {
 module.exports = {
   accountConfigTemplate,
   ensureExe,
+  ensureAppInfo,
+  seedTemplate,
+  appInfoSources,
   create,
   importAccount,
   update,
