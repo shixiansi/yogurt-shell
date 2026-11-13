@@ -133,6 +133,7 @@ function createServer(ctx) {
         bindPort: meta ? meta.bindPort : cfg.panel.port,
         lanUrls: meta ? meta.lanUrls : [],
         tokenRequired: Boolean((cfg.panel.token || '').trim()),
+        underSystemd: Boolean(meta && meta.underSystemd),
         platform: process.platform,
         node: process.version,
         cores: require('os').cpus().length,
@@ -183,6 +184,11 @@ function createServer(ctx) {
         });
       }
       const restarting = pathname.endsWith('/restart');
+      if (restarting && meta && meta.underSystemd) {
+        return sendJson(res, 409, {
+          error: '面板由 systemd 托管，请用 `systemctl --user restart yogurt-shell`（面板里直接重启会和 systemd 抢端口）',
+        });
+      }
       sendJson(res, 200, {
         ok: true,
         message: restarting ? '面板正在重启（会先停掉所有账号，2 秒后自动拉起）' : '面板正在停止（会先停掉所有账号）',

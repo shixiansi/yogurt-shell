@@ -106,7 +106,9 @@ async function main() {
   }
 
   let shuttingDown = false;
-  const meta = { bindHost: host, bindPort: port, lanUrls: [], restarting: false };
+  // systemd 托管的进程不能自己重启：它退出的同时 systemd 也会拉起一份，两边抢端口
+  const underSystemd = Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM);
+  const meta = { bindHost: host, bindPort: port, lanUrls: [], restarting: false, underSystemd };
   const shutdown = async (reason) => {
     if (shuttingDown) return;
     shuttingDown = true;

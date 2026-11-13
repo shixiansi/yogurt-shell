@@ -815,7 +815,14 @@ function settingsModal() {
         };
         $('#p-save', body).onclick = () => savePanel();
         $('#p-clear', body).onclick = () => savePanel({ token: '' });
-        $('#p-restart', body).onclick = () => restartPanel(pMsg);
+        const restartBtn = $('#p-restart', body);
+        if (state.server && state.server.underSystemd) {
+          restartBtn.disabled = true;
+          restartBtn.title = 'systemd 托管中';
+          pMsg.textContent = '当前由 systemd 托管：保存后在服务器上执行 systemctl --user restart yogurt-shell 生效。';
+        } else {
+          restartBtn.onclick = () => restartPanel(pMsg);
+        }
 
         $('#m-save', body).onclick = async () => {
           try {
