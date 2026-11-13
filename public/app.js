@@ -80,10 +80,18 @@ const state = {
   drawer: { id: null, lines: [], paused: false, filter: '', level: '', hideChat: false, es: null },
   panelUpdate: null,
   panelApply: null,
+  qrTimer: null,
   es: null,
 };
 
 let token = localStorage.getItem('ys_token') || '';
+
+// 令牌同时写进 cookie：<img> / 直接打开的链接带不了自定义请求头，靠 cookie 才能通过鉴权
+function syncTokenCookie() {
+  try {
+    document.cookie = 'ys_token=' + encodeURIComponent(token) + '; path=/; SameSite=Lax';
+  } catch {}
+}
 
 /* ---------------- API ---------------- */
 async function api(path, { method = 'GET', body, raw, headers = {} } = {}) {
@@ -112,8 +120,7 @@ async function api(path, { method = 'GET', body, raw, headers = {} } = {}) {
   return data;
 }
 
-function askToken() {
-  if ($('#token-input')) return;
+function askToken() {  if ($('#token-input')) return;
   openModal('需要访问令牌', `
     <div class="field">
       <label>面板设置了访问令牌（data/config.json → panel.token）</label>
@@ -126,6 +133,7 @@ function askToken() {
       $('#token-save', body).onclick = () => {
         token = $('#token-input', body).value.trim();
         localStorage.setItem('ys_token', token);
+        syncTokenCookie();
         closeModal();
         location.reload();
       };
@@ -135,6 +143,7 @@ function askToken() {
 
 /* ---------------- 启动 ---------------- */
 async function boot() {
+  if (token) syncTokenCookie();
   try {
     const data = await api('/api/state');
     applyState(data);
@@ -624,6 +633,10 @@ function openModal(title, bodyHtml, opts = {}) {
 }
 
 function closeModal() {
+  if (state.qrTimer) {
+    clearInterval(state.qrTimer);
+    state.qrTimer = null;
+  }
   $('#modal-root').classList.add('hidden');
   $('#modal-body').innerHTML = '';
 }
@@ -1346,15 +1359,68 @@ function qrModal(acc) {
   openModal(
     `${acc.name} · 登录二维码`,
     `
-    <div class="hint">Yogurt 首次登录（或 session 失效）时会把二维码写到账号目录的 qrcode.png，同时把链接打印在日志里。扫码后可在「日志」抽屉底部输入验证码。</div>
-    <div style="text-align:center">
-      <img src="/api/accounts/${encodeURIComponent(acc.id)}/qrcode?t=${Date.now()}" style="width:260px;height:260px;background:#fff;border-radius:12px;padding:8px" onerror="this.style.display='none';this.nextElementSibling.textContent='暂无 qrcode.png（可能已登录，或还没开始登录）';" />
-      <div class="hint"></div>
+    <div class="hint">Yogurt 首次登录（或 session 失效）时会把二维码写到账号目录（通常叫 qrcode.png），同时把登录链接打印在日志里。扫码后可在「日志」抽屉底部输入验证码。</div>
+    <div style="text-align:center;min-height:120px;display:flex;align-items:center;justify-content:center">
+      <div id="qr-box" class="hint">正在读取二维码…</div>
     </div>
-    <div class="row"><button class="btn" onclick="location.reload()">刷新面板</button></div>
+    <div class="row">
+      <button class="btn" id="qr-reload">重新读取</button>
+      <button class="btn" id="qr-download" disabled>下载图片</button>
+    </div>
+    <div class="hint" id="qr-msg"></div>
   `,
     {
-      onOpen() {},
+      onOpen(body) {
+        const box = $('#qr-box', body);
+        const msg = $('#qr-msg', body);
+        const download = $('#qr-download', body);
+        let blobUrl = null;
+
+        const load = async () => {
+          box.innerHTML = '<div class="hint">正在读取二维码…</div>';
+          msg.textContent = '';
+          download.disabled = true;
+          try {
+            // 用 fetch 带令牌取图片（<img src> 无法附带 x-panel-token 头，会 401）
+            const res = await fetch(`/api/accounts/${encodeURIComponent(acc.id)}/qrcode?t=${Date.now()}`, {
+              headers: token ? { 'x-panel-token': token } : {},
+              cache: 'no-store',
+            });
+            if (!res.ok) {
+              let detail = 'HTTP ' + res.status;
+              try {
+                const data = await res.json();
+                detail = data.error || detail;
+              } catch {}
+              box.innerHTML = `<div class="hint" style="color:var(--warn)">${esc(detail)}</div>`;
+              return;
+            }
+            const blob = await res.blob();
+            if (blobUrl) URL.revokeObjectURL(blobUrl);
+            blobUrl = URL.createObjectURL(blob);
+            box.innerHTML = `<img src="${blobUrl}" alt="登录二维码" style="width:260px;height:260px;background:#fff;border-radius:12px;padding:8px" />`;
+            msg.textContent = `已读取（${Math.round(blob.size / 1024)} KB）。扫码前先确认账号状态是「登录中」。`;
+            download.disabled = false;
+            download.onclick = () => {
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = `${acc.id}-qrcode.png`;
+              a.click();
+            };
+          } catch (err) {
+            box.innerHTML = `<div class="hint" style="color:var(--danger)">${esc(err.message)}</div>`;
+          }
+        };
+
+        $('#qr-reload', body).onclick = load;
+        load();
+        // 登录期间 yogurt 会不断刷新二维码，这里跟着自动重读（关掉弹窗就停）
+        if (state.qrTimer) clearInterval(state.qrTimer);
+        const accNow = state.accounts.find((a) => a.id === acc.id);
+        if (accNow && ['starting', 'login'].includes(accNow.status)) {
+          state.qrTimer = setInterval(load, 8000);
+        }
+      },
     }
   );
 }

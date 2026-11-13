@@ -291,6 +291,7 @@ sudo loginctl enable-linger $USER
 | --- | --- |
 | 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错（会明确提示 EADDRINUSE） |
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
+| 点「二维码」显示"暂无二维码"但文件明明存在 | 老版本用 `<img src>` 直接取图，浏览器带不上令牌头会 401。新版改成带令牌 `fetch` 取图（并把令牌同步到 cookie），图片按 `qrcode.png` / `qr.png` / 目录里 `*qr*` 图片兜底查找；仍失败会显示真实原因（401/路径找不到）而不是笼统"暂无" |
 | 启动就崩：`未在 app-info.json 下找到自定义 AppInfo 文件` | `protocol.version` 是 `custom` 但账号目录里没有 `app-info.json`。点卡片上的「一键修复」：先尝试从 `data/template/` 或 `assets/` 补一份，补不到就把 `protocol.version` 改成内置版本（Linux `46494`）。也可手动 `cp assets/app-info.json data/accounts/<QQ号>/`。想看清到底缺什么：`GET /api/accounts/<QQ号>/diagnostics` 会列出目录、协议版本、以及每个 app-info 来源是否存在 |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |

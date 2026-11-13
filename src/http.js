@@ -62,6 +62,38 @@ function maskMail(mail) {
   return { ...mail, pass: mail.pass ? '••••••••' : '' };
 }
 
+// 二维码文件名不写死：不同版本的 yogurt 可能叫 qrcode.png / qr.png / qrcode.jpg…
+const QR_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
+function findQrFile(dir) {
+  const preferred = ['qrcode.png', 'qr.png', 'qrcode.jpg', 'qrcode.jpeg', 'qr.jpg'];
+  for (const name of preferred) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).isFile()) return { file, mime: QR_MIME[path.extname(file).toLowerCase()] || 'image/png' };
+    } catch {}
+  }
+  // 兜底：目录里文件名带 qr 的图片，取最新的那个
+  try {
+    const candidates = fs
+      .readdirSync(dir)
+      .filter((name) => /qr/i.test(name) && QR_MIME[path.extname(name).toLowerCase()])
+      .map((name) => {
+        const file = path.join(dir, name);
+        return { file, mime: QR_MIME[path.extname(name).toLowerCase()], t: fs.statSync(file).mtimeMs };
+      })
+      .sort((a, b) => b.t - a.t);
+    if (candidates.length) return { file: candidates[0].file, mime: candidates[0].mime };
+  } catch {}
+  return null;
+}
+
 function createServer(ctx) {
   const { supervisor, metrics, notifier, bus, updater, meta } = ctx;
   const sseClients = new Set();
@@ -358,11 +390,21 @@ function createServer(ctx) {
         return sendJson(res, 200, { ok: true, config: parsed });
       }
       if (rest === 'qrcode' && method === 'GET') {
-        const file = path.join(store.accountDir(account), 'qrcode.png');
-        if (!fs.existsSync(file)) return sendJson(res, 404, { error: '暂无二维码（登录成功后会被清理）' });
-        const stat = fs.statSync(file);
-        res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': stat.size, 'Cache-Control': 'no-store' });
-        return fs.createReadStream(file).pipe(res);
+        const dir = store.accountDir(account);
+        const found = findQrFile(dir);
+        if (!found) {
+          return sendJson(res, 404, {
+            error: `账号目录里没有二维码图片（已查找 ${dir} 下的 qrcode.png / qr.png / *qr*.png）`,
+            dir,
+          });
+        }
+        const stat = fs.statSync(found.file);
+        res.writeHead(200, {
+          'Content-Type': found.mime,
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-store',
+        });
+        return fs.createReadStream(found.file).pipe(res);
       }
       return sendJson(res, 404, { error: '接口不存在' });
     }
