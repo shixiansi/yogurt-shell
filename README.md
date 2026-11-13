@@ -36,6 +36,16 @@ node server.js
 
 启动后控制台会打印面板地址、数据目录、账号数量。**按 Ctrl+C 退出时会先停掉所有账号再退出**（保证不留无人监管的 yogurt）。
 
+想让它脱离终端常驻（关掉窗口也继续跑）：
+
+```bat
+:: 后台启动：输出写到 data\panel.out.log，pid 记在 data\runtime\panel.pid
+cmd /c start "" /min cmd /c "cd /d E:\lagrangeV2\yogurt-shell && node server.js >> data\panel.out.log 2>&1"
+
+:: 优雅停止：先停掉所有账号，再退出面板
+stop.cmd
+```
+
 改端口：`node server.js --port 3091`，或改 `data/config.json` 里的 `panel.port`。
 
 ### 接管一个已经在跑的 yogurt
@@ -147,6 +157,7 @@ Yogurt 账号掉线，已停止进程
 yogurt-shell/
 ├── server.js                  # 入口：装配各模块 + HTTP 服务 + 定时任务
 ├── start.cmd                  # 双击启动
+├── stop.cmd                   # 优雅停止（先停账号，再退面板）
 ├── src/
 │   ├── store.js               # 配置读写（data/config.json）、路径、端口分配
 │   ├── logbus.js              # 每账号环形日志缓冲 + 落盘轮转 + 事件推送
@@ -171,6 +182,7 @@ yogurt-shell/
     ├── dist/<tag>/            # 下载解压后的 yogurt.exe
     ├── updates/               # 下载的 zip
     ├── backups/               # 更新前的旧 exe
+    ├── runtime/panel.pid      # 面板进程号（stop.cmd 用）
     └── events.jsonl           # 事件流水（面板「事件」里的来源）
 ```
 
@@ -208,6 +220,8 @@ powershell -ExecutionPolicy Bypass -File E:\lagrangeV2\yogurt-shell\scripts\inst
 | 更新后起不来 | `data/backups/` 里有旧 exe，覆盖回账号目录即可回滚；再点「启动」 |
 | 更新完端口/协议不对 | 新版本可能改了配置项，面板「配置」里对照官方文档调整 |
 | 日志里全是聊天内容 | 日志抽屉点「隐藏聊天」，或设置里把 `coreLogLevel` 调成 `INFO`/`WARN` |
+| 面板关掉后 yogurt 也跟着停了 | 这是设计：面板是守护进程，退出时会主动停掉所有账号，避免留下没人监管的 yogurt。想常驻就用后台启动方式或 `scripts/install-autostart.ps1` |
+| 想停掉所有账号但保留面板 | 面板上逐个点「停止」；`stop.cmd` 是连面板一起优雅退出 |
 | 面板被强杀后 yogurt 还在 | 重新启动面板会自动清理；或手动 `taskkill /IM yogurt.exe /F` |
 
 ---

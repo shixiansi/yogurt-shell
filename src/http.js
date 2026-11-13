@@ -64,7 +64,6 @@ function createServer(ctx) {
   const { supervisor, metrics, notifier, bus, updater } = ctx;
   const sseClients = new Set();
   const logClients = new Map(); // accountId -> Set<res>
-
   const publicDir = path.join(store.ROOT, 'public');
 
   function broadcast(payload) {
@@ -149,6 +148,17 @@ function createServer(ctx) {
 
     // --- 状态 ---
     if (pathname === '/api/health' && method === 'GET') return sendJson(res, 200, { ok: true, now: Date.now() });
+    if (pathname === '/api/panel/shutdown' && method === 'POST') {
+      const remote = req.socket.remoteAddress || '';
+      if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote)) {
+        return sendJson(res, 403, { error: '只允许本机调用' });
+      }
+      sendJson(res, 200, { ok: true, message: '面板正在停止（会先停掉所有账号）' });
+      setTimeout(() => {
+        if (ctx.shutdown) ctx.shutdown('api');
+      }, 200);
+      return;
+    }
     if (pathname === '/api/state' && method === 'GET') return sendJson(res, 200, statePayload());
 
     // --- SSE ---

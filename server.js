@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const store = require('./src/store');
 const { LogBus } = require('./src/logbus');
 const { Supervisor } = require('./src/supervisor');
@@ -49,7 +50,25 @@ async function main() {
     });
   }
 
-  const server = createServer({ supervisor, metrics, notifier, bus, updater });
+  let shuttingDown = false;
+  const shutdown = async (reason) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[${stamp()}] 收到 ${reason}，停止所有账号并退出…`);
+    try {
+      await supervisor.stopAll();
+    } catch (err) {
+      console.error('[shutdown]', err.message);
+    }
+    metrics.stop();
+    server.close();
+    try {
+      fs.rmSync(path.join(store.PATHS.runtime, 'panel.pid'), { force: true });
+    } catch {}
+    setTimeout(() => process.exit(0), 300);
+  };
+
+  const server = createServer({ supervisor, metrics, notifier, bus, updater, shutdown });
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -88,20 +107,10 @@ async function main() {
 
   supervisor.startAll().catch((err) => console.error('[start-all]', err.message));
 
-  let shuttingDown = false;
-  const shutdown = async (signal) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\n[${stamp()}] 收到 ${signal}，停止所有账号并退出…`);
-    try {
-      await supervisor.stopAll();
-    } catch (err) {
-      console.error('[shutdown]', err.message);
-    }
-    metrics.stop();
-    server.close();
-    setTimeout(() => process.exit(0), 300);
-  };
+  try {
+    fs.writeFileSync(path.join(store.PATHS.runtime, 'panel.pid'), String(process.pid), 'utf8');
+  } catch {}
+
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('uncaughtException', (err) => console.error('[uncaught]', err));
