@@ -7,6 +7,7 @@ const { URL } = require('url');
 const store = require('./store');
 const accountsMod = require('./accounts');
 const { listenAddresses, describeMismatch } = require('./listen');
+const selfupdate = require('./selfupdate');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -430,6 +431,31 @@ function createServer(ctx) {
         return sendJson(res, 502, { ok: false, error: err.message });
       }
     }
+    // --- 面板自身更新（git pull） ---
+    if (pathname === '/api/panel/update' && method === 'GET') {
+      try {
+        return sendJson(res, 200, { ok: true, status: await selfupdate.status() });
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message });
+      }
+    }
+    if (pathname === '/api/panel/update/check' && method === 'POST') {
+      try {
+        return sendJson(res, 200, { ok: true, status: await selfupdate.status({ fetch: true }) });
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message });
+      }
+    }
+    if (pathname === '/api/panel/update/apply' && method === 'POST') {
+      try {
+        const result = await selfupdate.apply();
+        return sendJson(res, 200, { ok: true, result });
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
+      }
+    }
+
+    // --- 更新（yogurt） ---
     if (pathname === '/api/update/progress' && method === 'GET') {
       return sendJson(res, 200, { progress: updater.progress });
     }

@@ -78,6 +78,8 @@ const state = {
   cards: new Map(),
   unseenEvents: 0,
   drawer: { id: null, lines: [], paused: false, filter: '', level: '', hideChat: false, es: null },
+  panelUpdate: null,
+  panelApply: null,
   es: null,
 };
 
@@ -919,6 +921,110 @@ async function restartPanel(msgEl) {
   if (msgEl) msgEl.textContent = '面板 36 秒内没回来：看 data/panel.out.log，或手动重新启动';
 }
 
+// ---------- 面板自身更新（git pull） ----------
+async function loadPanelUpdate(withFetch = false) {
+  const box = document.getElementById('panel-update-box');
+  if (box) {
+    box.innerHTML = '<h3>面板自身更新</h3><div class="hint">正在' + (withFetch ? '从远端拉取并对比提交' : '读取 git 状态') + '…</div>';
+  }
+  try {
+    const data = withFetch
+      ? await api('/api/panel/update/check', { method: 'POST', body: {} })
+      : await api('/api/panel/update');
+    state.panelUpdate = data.status;
+  } catch (err) {
+    state.panelUpdate = { available: false, reason: err.message };
+  }
+  renderPanelUpdateBox();
+}
+
+function panelUpdateHtml() {
+  const p = state.panelUpdate;
+  const applied = state.panelApply;
+  if (!p) return '<h3>面板自身更新</h3><div class="hint">正在读取 git 状态…</div>';
+
+  let banner = '';
+  if (applied) {
+    banner = applied.updated
+      ? `<div class="hint" style="color:var(--accent)">已更新到 <span class="mono">${esc(applied.to || '')}</span>，<b>重启面板后生效</b>。</div>
+         <div class="row" style="margin-top:8px"><button class="btn primary" data-act="restart">⟳ 重启面板</button></div>`
+      : '<div class="hint">已经是最新，没有需要拉取的提交。</div>';
+  }
+
+  if (!p.available) {
+    return `<h3>面板自身更新</h3>
+      <div class="hint" style="color:var(--warn)">${esc(p.reason || '不可用')}</div>
+      <div class="hint">${p.pkgVersion ? '当前版本：' + esc(p.pkgVersion) : ''}</div>`;
+  }
+
+  const head = p.head || {};
+  const behind = p.behind;
+  const stateText = behind == null ? '未检查远端（点「检查面板更新」）' : behind > 0 ? `落后 ${behind} 个提交` : '已是最新';
+  const incoming = (p.incoming || [])
+    .map((item) => `<div class="mono" style="font-size:12px;white-space:pre-wrap">${esc(item.sha)}  ${esc(item.subject)}</div>`)
+    .join('');
+  const canApply = behind > 0 && p.dirty !== true;
+
+  return `<h3>面板自身更新</h3>
+    <div class="desc">面板就是 <span class="mono">${esc(p.remoteUrl || '本仓库')}</span> 的 <span class="mono">${esc(p.branch || 'main')}</span> 分支，直接 <span class="mono">git fetch + 快进合并</span> 更新代码；更新后需要重启面板才生效。</div>
+    <div class="grid3">
+      <div class="field"><label>当前提交</label><div class="mono">${esc((head.sha || '').slice(0, 7) || '未知')}</div><div class="hint">${esc(head.subject || '')}</div></div>
+      <div class="field"><label>版本</label><div class="mono">${esc(p.pkgVersion || '未知')}</div><div class="hint">${esc(head.date || '')}</div></div>
+      <div class="field"><label>远端状态</label><div class="mono">${esc(stateText)}</div><div class="hint">${p.ahead ? `本地领先 ${p.ahead} 个提交` : '本地无领先提交'}</div></div>
+    </div>
+    ${p.dirty ? '<div class="hint" style="color:var(--warn)">项目目录有未提交的改动，先处理掉才能自动更新。</div>' : ''}
+    ${p.fetchError ? `<div class="hint" style="color:var(--danger)">拉取远端信息失败：${esc(p.fetchError)}</div>` : ''}
+    ${incoming ? `<pre class="code" style="margin-top:10px">${incoming}</pre>` : ''}
+    <div class="row" style="margin-top:12px">
+      <button class="btn" data-act="check">检查面板更新</button>
+      <button class="btn primary" data-act="apply" ${canApply ? '' : 'disabled'}>拉取并更新</button>
+    </div>
+    ${banner}`;
+}
+
+function renderPanelUpdateBox() {
+  const box = document.getElementById('panel-update-box');
+  if (!box) return;
+  box.innerHTML = panelUpdateHtml();
+}
+
+function bindPanelUpdateBox(box) {
+  box.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'check') {
+      btn.disabled = true;
+      await loadPanelUpdate(true);
+      return;
+    }
+    if (act === 'apply') {
+      if (!confirm('拉取面板最新代码？\n（只是 git 快进合并，不会动 data/ 里的账号数据；更新后需要重启面板）')) return;
+      btn.disabled = true;
+      btn.textContent = '拉取中…';
+      try {
+        const res = await api('/api/panel/update/apply', { method: 'POST', body: {} });
+        state.panelApply = res.result || null;
+        state.panelUpdate = null;
+        toast(res.result && res.result.updated ? '已更新，重启面板生效' : '已是最新');
+        await loadPanelUpdate(false);
+      } catch (err) {
+        toast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = '拉取并更新';
+      }
+      return;
+    }
+    if (act === 'restart') {
+      if (state.server && state.server.underSystemd) {
+        toast('systemd 托管：请在 shell 执行 systemctl --user restart yogurt-shell', 'warn');
+      } else {
+        restartPanel(null);
+      }
+    }
+  });
+}
+
 // 更新/安装进度条（服务端通过 SSE 推 update-progress）
 function applyUpdateProgress(p) {
   const bar = document.getElementById('u-bar');
@@ -970,6 +1076,8 @@ function updateModal() {
       <div class="progress"><div class="progress-bar" id="u-bar" style="width:${showProgress ? Number(progress.percent) || 0 : 0}%"></div></div>
       <div class="progress-text" id="u-phase">${esc(progress.message || '')}</div>
     </div>
+
+    <div class="section" id="panel-update-box">${panelUpdateHtml()}</div>
 
     <div class="section">
       <h3>当前状态</h3>
@@ -1032,6 +1140,11 @@ function updateModal() {
   `,
     {
       onOpen(body) {
+        const panelBox = $('#panel-update-box', body);
+        if (panelBox) {
+          bindPanelUpdateBox(panelBox);
+          if (!state.panelUpdate) loadPanelUpdate(false);
+        }
         const sourceSelect = $('#u-source', body);
         const sourcePath = $('#u-source-path', body);
         sourceSelect.onchange = () => {

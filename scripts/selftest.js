@@ -352,6 +352,23 @@ check('ensureAppInfo 能补到临时账号目录', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ---------- 10. 面板自身更新（git 输出解析） ----------
+console.log('\n[10] 面板自身更新');
+check('解析 git log 的 %h/%cI/%s', () => {
+  const { parseGitLog } = require('../src/selfupdate');
+  const rows = parseGitLog('5872003\t2026-11-13T21:20:00+08:00\tfix: 补 app-info.json\nff44ea5\t2026-11-13T20:00:00+08:00\tfeat: 进度条');
+  eq(rows.length, 2);
+  eq(rows[0].sha, '5872003');
+  eq(rows[0].subject, 'fix: 补 app-info.json');
+  eq(rows[1].sha, 'ff44ea5');
+  eq(parseGitLog('').length, 0);
+});
+check('package.json 版本可读', () => {
+  const { readPackageVersion } = require('../src/selfupdate');
+  const v = readPackageVersion();
+  if (!v || !/^\d+\.\d+\.\d+/.test(v)) throw new Error('版本格式异常：' + v);
+});
+
 // ---------- 汇总 ----------
 console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
 if (failures.length) {
