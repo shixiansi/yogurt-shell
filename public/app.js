@@ -425,6 +425,11 @@ function connectStream() {
       renderAccounts();
     } else if (msg.type === 'metrics') {
       applyMetrics(msg);
+    } else if (msg.type === 'update-progress') {
+      applyUpdateProgress(msg.progress);
+      if (msg.progress && (msg.progress.phase === 'done' || msg.progress.phase === 'error')) {
+        api('/api/state').then(applyState).catch(() => {});
+      }
     } else if (msg.type === 'event') {
       state.events.unshift(msg.event);
       state.unseenEvents += 1;
@@ -913,13 +918,58 @@ async function restartPanel(msgEl) {
   if (msgEl) msgEl.textContent = '面板 36 秒内没回来：看 data/panel.out.log，或手动重新启动';
 }
 
+// 更新/安装进度条（服务端通过 SSE 推 update-progress）
+function applyUpdateProgress(p) {
+  const bar = document.getElementById('u-bar');
+  const text = document.getElementById('u-phase');
+  const wrap = document.getElementById('u-progress-wrap');
+  if (!bar || !text) return;
+  if (wrap) wrap.classList.remove('hidden');
+  const pct = Math.max(0, Math.min(100, Number(p && p.percent) || 0));
+  bar.style.width = pct.toFixed(1) + '%';
+  bar.className = 'progress-bar' + (p && p.phase === 'error' ? ' error' : p && p.phase === 'done' ? ' done' : '');
+  const message = (p && p.message) || (p && p.phase) || '';
+  text.textContent = p && p.phase === 'error' && p.error ? `${message}：${p.error}` : message;
+  text.className = 'progress-text' + (p && p.phase === 'error' ? ' error' : '');
+}
+
+function uploadWithProgress(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url, true);
+    if (token) xhr.setRequestHeader('x-panel-token', token);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable) onProgress(evt.loaded / evt.total);
+    };
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error((data && data.error) || 'HTTP ' + xhr.status));
+    };
+    xhr.onerror = () => reject(new Error('上传失败（网络错误）'));
+    xhr.send(file);
+  });
+}
+
 function updateModal() {
   const u = state.update || {};
   const latest = u.latest;
   const notes = latest && latest.notes ? latest.notes : '';
+  const sources = Array.isArray(u.sources) ? u.sources : [];
+  const progress = u.progress || { phase: 'idle', percent: 0, message: '' };
+  const showProgress = ['checking', 'downloading', 'extracting', 'installing', 'done', 'error'].includes(progress.phase);
   openModal(
     '版本更新',
     `
+    <div class="progress-wrap ${showProgress ? '' : 'hidden'}" id="u-progress-wrap">
+      <div class="progress"><div class="progress-bar" id="u-bar" style="width:${showProgress ? Number(progress.percent) || 0 : 0}%"></div></div>
+      <div class="progress-text" id="u-phase">${esc(progress.message || '')}</div>
+    </div>
+
     <div class="section">
       <h3>当前状态</h3>
       <div class="grid2">
@@ -933,8 +983,29 @@ function updateModal() {
     </div>
 
     <div class="section">
-      <h3>更新</h3>
-      <div class="desc">从 GitHub Releases 下载 <span class="mono">${esc((u.asset || 'yogurt-<平台>.zip'))}</span>，校验 sha256 后解压、替换各账号目录里的可执行文件（旧文件备份到 data/backups）。更新会先停掉正在运行的账号，装完自动拉起。</div>
+      <h3>从本机已安装的 yogurt 安装</h3>
+      <div class="desc">直接用一个已有的 yogurt 目录 / 可执行文件 / zip，把它装到所有账号目录（不联网）。会先停账号、备份旧文件、装完自动拉起。</div>
+      <div class="field">
+        <label>已发现的来源</label>
+        <select class="input" id="u-source">
+          <option value="">— 手动填写下面的路径 —</option>
+          ${sources.map((s) => `<option value="${esc(s.path)}">${esc(s.note || s.kind)} · ${esc(s.path)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>路径（目录 / yogurt 可执行文件 / .zip）</label>
+        <input class="input" id="u-source-path" placeholder="例如 D:\\yogurt-windows-x64" />
+      </div>
+      <div class="row">
+        <button class="btn primary" id="u-source-install">用这个路径安装</button>
+        <button class="btn" id="u-source-refresh">重新扫描来源</button>
+      </div>
+      <div class="hint" id="u-source-msg"></div>
+    </div>
+
+    <div class="section">
+      <h3>从 GitHub 更新</h3>
+      <div class="desc">下载 <span class="mono">${esc(u.asset || 'yogurt-<平台>.zip')}</span>，校验 sha256 后解压、替换各账号目录里的可执行文件（旧文件备份到 data/backups）。</div>
       <div class="field"><label>下载镜像前缀（github.com 直连不通时自动使用）</label><input class="input" id="u-mirror" value="${esc((state.settings.update && state.settings.update.mirrorPrefix) || '')}" placeholder="https://gh-proxy.com/" /></div>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="u-check">检查更新</button>
@@ -944,23 +1015,60 @@ function updateModal() {
     </div>
 
     <div class="section">
-      <h3>本地 zip 安装</h3>
-      <div class="desc">没法联网时，手动下载 yogurt-windows-x64.zip 后从这里上传安装。</div>
+      <h3>本地 zip 上传安装</h3>
+      <div class="desc">没法联网时，手动下载对应平台的 zip 后从这里上传（上传和安装都会显示进度）。</div>
       <div class="row">
         <input type="file" id="u-file" class="input" accept=".zip" />
-        <input class="input" id="u-tag" placeholder="版本标签（可选，如 v0.1.0-dev.257）" style="max-width:260px" />
+        <input class="input" id="u-tag" placeholder="版本标签（可选）" style="max-width:220px" />
         <button class="btn primary" id="u-upload">上传并安装</button>
       </div>
-      <div class="hint" id="u-progress"></div>
     </div>
 
     <div class="section">
       <h3>已下载的版本</h3>
-      <div class="hint">${(u.dists || []).map((d) => `${esc(d.tag)}${d.hasExe ? '' : '（缺少 exe）'}`).join('、') || '暂无'}</div>
+      <div class="hint">${(u.dists || []).filter((d) => /^v?\d/.test(d.tag)).map((d) => `${esc(d.tag)}${d.hasExe ? '' : '（缺少可执行文件）'}`).join('、') || '暂无'}</div>
     </div>
   `,
     {
       onOpen(body) {
+        const sourceSelect = $('#u-source', body);
+        const sourcePath = $('#u-source-path', body);
+        sourceSelect.onchange = () => {
+          if (sourceSelect.value) sourcePath.value = sourceSelect.value;
+        };
+        $('#u-source-refresh', body).onclick = async () => {
+          try {
+            applyState(await api('/api/state'));
+            updateModal();
+            toast('来源已重新扫描');
+          } catch (err) {
+            toast(err.message, 'error');
+          }
+        };
+        $('#u-source-install', body).onclick = async () => {
+          const path = (sourcePath.value || sourceSelect.value || '').trim();
+          const msg = $('#u-source-msg', body);
+          if (!path) {
+            msg.textContent = '先选一个来源，或填写路径';
+            return;
+          }
+          if (!confirm(`用 ${path} 里的 yogurt 覆盖所有账号的可执行文件？\n（会先停账号、备份旧文件，装完自动拉起）`)) return;
+          const btn = $('#u-source-install', body);
+          btn.disabled = true;
+          msg.textContent = '安装中…';
+          try {
+            const res = await api('/api/update/local', { method: 'POST', body: { path } });
+            msg.textContent = '完成：' + (res.result ? res.result.tag : '');
+            toast('已从本地安装');
+            applyState(await api('/api/state'));
+            updateModal();
+          } catch (err) {
+            msg.textContent = '失败：' + err.message;
+            toast(err.message, 'error');
+            btn.disabled = false;
+          }
+        };
+
         $('#u-check', body).onclick = async () => {
           const btn = $('#u-check', body);
           btn.disabled = true;
@@ -988,6 +1096,7 @@ function updateModal() {
           const btn = $('#u-install', body);
           btn.disabled = true;
           btn.textContent = '下载安装中…';
+          applyUpdateProgress({ phase: 'checking', percent: 1, message: '准备…' });
           try {
             const r = await api('/api/update/install', { method: 'POST', body: { refresh: true } });
             const via = r.result ? `（${r.result.tag}）` : '';
@@ -1004,19 +1113,28 @@ function updateModal() {
           const file = $('#u-file', body).files[0];
           if (!file) return toast('先选一个 zip 文件', 'error');
           const tag = $('#u-tag', body).value.trim();
-          const prog = $('#u-progress', body);
-          prog.textContent = '上传中…';
+          const btn = $('#u-upload', body);
+          btn.disabled = true;
+          applyUpdateProgress({ phase: 'downloading', percent: 0, message: `上传 ${file.name}…` });
           try {
-            const res = await api(
+            const res = await uploadWithProgress(
               `/api/update/upload?name=${encodeURIComponent(file.name)}${tag ? '&tag=' + encodeURIComponent(tag) : ''}`,
-              { method: 'PUT', raw: file }
+              file,
+              (ratio) => {
+                applyUpdateProgress({
+                  phase: 'downloading',
+                  percent: Math.min(85, ratio * 85),
+                  message: `上传 ${file.name}：${Math.round(ratio * 100)}%`,
+                });
+              }
             );
-            prog.textContent = '安装完成：' + (res.result ? res.result.tag : '');
             toast('本地包安装完成');
             applyState(await api('/api/state'));
+            updateModal();
           } catch (err) {
-            prog.textContent = '失败：' + err.message;
+            applyUpdateProgress({ phase: 'error', percent: 100, message: '上传失败', error: err.message });
             toast(err.message, 'error');
+            btn.disabled = false;
           }
         };
       },

@@ -89,6 +89,7 @@ function createServer(ctx) {
   });
   metrics.on('sample', (data) => broadcast({ type: 'metrics', ...data }));
   notifier.on('event', (event) => broadcast({ type: 'event', event }));
+  updater.on('progress', (progress) => broadcast({ type: 'update-progress', progress }));
 
   function requireAuth(req, url) {
     const token = (store.getConfig().panel.token || '').trim();
@@ -161,6 +162,8 @@ function createServer(ctx) {
         lastCheck: updater.state.lastCheck,
         checking: updater.state.checking,
         dists: updater.installedDists(),
+        progress: updater.progress,
+        sources: updater.listSources(),
       },
       events: notifier.list(80),
     };
@@ -425,6 +428,27 @@ function createServer(ctx) {
         return sendJson(res, 200, { ok: true, latest });
       } catch (err) {
         return sendJson(res, 502, { ok: false, error: err.message });
+      }
+    }
+    if (pathname === '/api/update/progress' && method === 'GET') {
+      return sendJson(res, 200, { progress: updater.progress });
+    }
+    if (pathname === '/api/update/sources' && method === 'GET') {
+      return sendJson(res, 200, { sources: updater.listSources() });
+    }
+    // 从本机已安装的 yogurt 安装（目录 / 可执行文件 / zip）
+    if (pathname === '/api/update/local' && method === 'POST') {
+      const body = await readJson(req);
+      try {
+        const result = await updater.installFromSource({
+          sourcePath: body.path,
+          tag: body.tag,
+          restartRunning: body.restartRunning !== false,
+        });
+        broadcast({ type: 'accounts' });
+        return sendJson(res, 200, { ok: true, result });
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
       }
     }
     if (pathname === '/api/update/install' && method === 'POST') {

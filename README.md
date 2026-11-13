@@ -166,15 +166,15 @@ Yogurt 账号掉线，已停止进程
 
 ## 6. 更新
 
-面板「⭯ 更新」：
+面板「⭯ 更新」，三条路径都带**进度条**（检查 / 下载 / 解压 / 替换 / 完成，服务端通过 SSE 实时推送；上传 zip 时先显示浏览器上传进度）：
 
-- **检查更新**：读 `SaltifyDev/yogurt-releases` 最新 release（`update.repo` 可改）。
-- **自动选包**：按当前平台/架构挑 release 里的包 —— `yogurt-windows-x64.zip` / `yogurt-linux-x64.zip` / `yogurt-linux-arm64.zip` / `yogurt-macos-arm64.zip`；`update.asset` 留空即为自动，填了则强制使用。
-- **下载并安装**：下载 → 用 release 里的 `digest` 做 sha256 校验 → 内置 zip 解压到 `data/dist/<tag>/` → 对每个账号：停进程 → 备份旧二进制到 `data/backups/` → 硬链接新二进制（同盘零拷贝，失败则复制）→ 补可执行权限（Linux/macOS）→ 自动拉起。
-- **本地 zip 安装**：没网时手动下载 zip，从面板上传安装（浏览器直传，不需要额外组件）。
-- **镜像**：`github.com` 直连超时会自动改用镜像前缀（默认顺序：直连 → 已记住的镜像 → `https://gh-proxy.com/` → `https://ghfast.top/`），成功后把可用的镜像记到配置里，下次直接用。
+- **从本机已安装的 yogurt 安装**（不联网）：填/选一个已有路径即可 —— 支持「含 yogurt 可执行文件的目录」、「可执行文件本身」、「本地 .zip」。面板会自动发现来源：已下载的 dist、`data/updates/*.zip`、项目同级目录里像 yogurt 的文件夹、以及各账号「导入现有目录」时记录的来源。安装同样会先停账号、把旧文件备份到 `data/backups/`、装完自动拉起；`data/dist/local-*` 只保留最近 2 份。
+- **从 GitHub 更新**：读 `SaltifyDev/yogurt-releases` 最新 release（`update.repo` 可改），按平台/架构自动选包 —— `yogurt-windows-x64.zip` / `yogurt-linux-x64.zip` / `yogurt-linux-arm64.zip` / `yogurt-macos-arm64.zip`（`update.asset` 留空即自动，填了则强制）。下载时用 release 的 `digest` 做 sha256 校验，解压到 `data/dist/<tag>/` 后逐账号替换（硬链接，同盘零拷贝），并补可执行权限。
+- **本地 zip 上传安装**：没网时手动下载 zip 从面板上传，带上传进度。
+- **镜像**：`github.com` 直连超时会自动换镜像（直连 → 已记住的镜像 → `https://gh-proxy.com/` → `https://ghfast.top/`），成功后把可用镜像记到配置里。
+- **回滚**：`data/backups/` 里是每次替换前的旧文件，覆盖回账号目录再点「启动」即可。
 
-「已安装版本」以**账号实际跑起来的版本**为准（有账号落后就会提示可更新），dist 版本单独显示。
+「已安装版本」以**账号实际跑起来的版本**为准（有账号落后就提示可更新），dist 版本单独显示；本地安装的 `local-*` 目录不参与版本比较。
 
 ---
 

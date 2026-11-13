@@ -216,6 +216,14 @@ check('dev 构建号比较', () => {
   if (compareVersions('0.1.0-dev.1000', '0.1.0-dev.257') <= 0) throw new Error('1000 应大于 257');
   if (compareVersions('0.2.0-dev.1', '0.1.9-dev.999') <= 0) throw new Error('0.2.0 应大于 0.1.9');
 });
+check('本地安装产生的 local-* 目录不算版本', () => {
+  const { isVersionTag } = require('../src/updater');
+  eq(isVersionTag('v0.1.0-dev.257'), true);
+  eq(isVersionTag('0.1.0-dev.248'), true);
+  eq(isVersionTag('local-yogurt-windows-x64__1_'), false);
+  eq(isVersionTag('local-v0.1.0-dev.257'), false);
+  eq(isVersionTag(''), false);
+});
 
 // ---------- 5. 进程名匹配（孤儿清理用） ----------
 console.log('\n[5] 进程识别');
