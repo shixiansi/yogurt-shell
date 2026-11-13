@@ -172,6 +172,7 @@ Yogurt 账号掉线，已停止进程
 - **从 GitHub 更新**：读 `SaltifyDev/yogurt-releases` 最新 release（`update.repo` 可改），按平台/架构自动选包 —— `yogurt-windows-x64.zip` / `yogurt-linux-x64.zip` / `yogurt-linux-arm64.zip` / `yogurt-macos-arm64.zip`（`update.asset` 留空即自动，填了则强制）。下载时用 release 的 `digest` 做 sha256 校验，解压到 `data/dist/<tag>/` 后逐账号替换（硬链接，同盘零拷贝），并补可执行权限。
 - **本地 zip 上传安装**：没网时手动下载 zip 从面板上传，带上传进度。
 - **镜像**：`github.com` 直连超时会自动换镜像（直连 → 已记住的镜像 → `https://gh-proxy.com/` → `https://ghfast.top/`），成功后把可用镜像记到配置里。
+- **面板自身的更新**（同一弹窗顶部）：面板就是个 git 仓库，点「检查面板更新」会 `git fetch` 对比 `origin/<分支>`，列出落后几个提交和提交标题；点「拉取并更新」执行 `git fetch + merge --ff-only`（工作区有改动、或本地有分叉提交时会拒绝，不会强推你的改动），更新完提示重启面板生效（systemd 托管时提示 `systemctl --user restart yogurt-shell`）。没有 git、或项目是拷贝部署（不是仓库）时会直接说明原因。
 - **回滚**：`data/backups/` 里是每次替换前的旧文件，覆盖回账号目录再点「启动」即可。
 
 「已安装版本」以**账号实际跑起来的版本**为准（有账号落后就提示可更新），dist 版本单独显示；本地安装的 `local-*` 目录不参与版本比较。
@@ -211,6 +212,7 @@ yogurt-shell/
 │   ├── updater.js             # GitHub release 检查/下载/校验/安装
 │   ├── zipx.js                # 内置 zip 解压（stored/deflate）
 │   ├── accounts.js            # 账号创建/导入/改端口/删除/配置文本
+│   ├── selfupdate.js          # 面板自身更新（git fetch / 快进合并）
 │   ├── http.js                # 路由、SSE 实时推送、静态文件、令牌校验
 │   └── ansi.js                # 剥离 ANSI 颜色、识别日志等级
 ├── scripts/
@@ -294,6 +296,8 @@ sudo loginctl enable-linger $USER
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |
 | 改成 `0.0.0.0` 没效果、日志里还是 127.0.0.1 | 见上面「两个 host 别搞混」：① 面板 host/port 只在启动时读，改完要重启面板；② 接管后生效的是 `data/accounts/<QQ号>/config.json`，旧目录那份已经作废；③ 日志里的 127.0.0.1 是客户端来源 IP，本来就不会变。以账号卡片的「实际监听」和 yogurt 的 `Listen Address` 为准 |
 | 更新失败 `fetch failed` | `github.com` 不通，填镜像前缀（如 `https://gh-proxy.com/`），或改用「本地 zip 安装」 |
+| 面板更新按钮是灰的 / 提示有未提交改动 | 自动更新只做快进合并，工作区必须干净。`git status` 看看，处理后再点；手工改过源码就直接 `git stash` 或提交 |
+| 面板更新提示「不是 git 仓库」 | 项目是拷贝部署的，没有 .git；改成 `git clone` 部署，或手动拷代码覆盖 |
 | 更新失败「压缩包里没有…」 | 下错了平台的包；面板默认按平台自动选包，`update.asset` 别乱填 |
 | 更新后起不来 | `data/backups/` 里有旧二进制，覆盖回账号目录即可回滚；再点「启动」 |
 | Linux 上 `./start.sh` 报 `bad interpreter` | 脚本被 Windows 改成了 CRLF：`sed -i 's/\r$//' start.sh stop.sh scripts/*.sh` |
