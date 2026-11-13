@@ -11,20 +11,8 @@ const CORES = Math.max(1, os.cpus().length);
 const HISTORY = 90; // 3s * 90 = 4.5 分钟
 
 function findPwsh() {
-  if (process.platform !== 'win32') return null;
-  const candidates = [
-    'pwsh',
-    'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-    path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'),
-  ];
-  for (const c of candidates) {
-    if (c === 'pwsh') {
-      // 交给 PATH 解析，spawn 失败会自动抛 error
-      return c;
-    }
-    if (fs.existsSync(c)) return c;
-  }
-  return 'powershell.exe';
+  const { findPowerShell } = require('./winproc');
+  return findPowerShell();
 }
 
 // 采样器常驻一个 PowerShell 进程，每 3s 输出一行 JSON（避免每轮都拉起新进程）
@@ -92,6 +80,11 @@ class Metrics extends EventEmitter {
     child.on('error', (err) => {
       this.disabled = '采样器启动失败：' + err.message;
       this.child = null;
+      this.failures += 1;
+      if (this.failures <= 3 && !this.stopped) {
+        if (this.restartTimer) clearTimeout(this.restartTimer);
+        this.restartTimer = setTimeout(() => this.start(), 5000);
+      }
     });
 
     child.stdout.on('data', (chunk) => {
@@ -126,6 +119,7 @@ class Metrics extends EventEmitter {
     } catch {
       return;
     }
+    this.disabled = null;
     const t = payload.t || Date.now();
     const items = Array.isArray(payload.items) ? payload.items : [];
     for (const item of items) {
