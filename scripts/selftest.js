@@ -409,14 +409,25 @@ check('systemd unit 关键字段齐全', () => {
     if (!unit.includes(key)) throw new Error('unit 缺 ' + key);
   }
 });
-check('stop 脚本会带令牌，start 脚本会查 pid/端口', () => {
+check('stop 逻辑会带令牌，start 脚本会查端口', () => {
   const fs2 = require('fs');
   const read = (name) => fs2.readFileSync(path.join(__dirname, '..', name), 'utf8');
-  if (!/x-panel-token/.test(read('stop.sh'))) throw new Error('stop.sh 没带 x-panel-token');
-  if (!/x-panel-token/.test(read('stop.cmd'))) throw new Error('stop.cmd 没带 x-panel-token');
-  const bg = read('start-background.sh');
-  if (!/panel\.pid/.test(bg)) throw new Error('start-background.sh 没检查 pid 文件');
-  if (!/EADDRINUSE/.test(bg)) throw new Error('start-background.sh 没检查端口占用');
+  // 令牌逻辑收敛在 scripts/stop-panel.js，stop.sh / stop.cmd 只负责转发
+  if (!/x-panel-token/.test(read('scripts/stop-panel.js'))) throw new Error('stop-panel.js 没带 x-panel-token');
+  if (!/stop-panel\.js/.test(read('stop.sh'))) throw new Error('stop.sh 没调用 stop-panel.js');
+  if (!/stop-panel\.js/.test(read('stop.cmd'))) throw new Error('stop.cmd 没调用 stop-panel.js');
+  const bg = read('scripts/start-background.js');
+  if (!/panel\.pid|pidFile/.test(bg)) throw new Error('start-background.js 没记录 pid');
+  if (!/EADDRINUSE|portInUse/.test(bg)) throw new Error('start-background.js 没检查端口占用');
+  if (!/api\/health/.test(bg)) throw new Error('start-background.js 没探活');
+});
+check('.cmd 里不出现中文（chcp 65001 + 多字节会让 cmd 解析错乱）', () => {
+  const fs2 = require('fs');
+  for (const name of ['start.cmd', 'stop.cmd', 'start-background.cmd']) {
+    const text = fs2.readFileSync(path.join(__dirname, '..', name), 'utf8');
+    const bad = text.split('\n').filter((line) => /[\u4e00-\u9fa5]/.test(line) && !/^\s*rem\b/i.test(line));
+    if (bad.length) throw new Error(name + ' 里有中文行：' + bad[0].trim().slice(0, 40));
+  }
 });
 
 // ---------- 汇总 ----------
