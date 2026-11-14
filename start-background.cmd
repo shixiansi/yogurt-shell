@@ -1,20 +1,25 @@
 @echo off
-chcp 65001 >nul
+rem Yogurt Shell - start panel in background (no console window)
+rem All messages come from the Node helper (UTF-8 safe); this file stays ASCII-only.
 setlocal
 cd /d "%~dp0"
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [yogurt-shell] 未找到 Node.js，请先安装：https://nodejs.org/
+  echo [yogurt-shell] Node.js not found. Install Node.js 18+ first: https://nodejs.org/
   pause
   exit /b 1
 )
 
-if not exist "data" mkdir "data"
+node scripts\start-background.js %*
+set "CODE=%errorlevel%"
 
-echo [yogurt-shell] 正在后台启动面板…
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:YOGURT_SHELL_LOG='%CD%\data\panel.out.log'; Start-Process -FilePath 'node' -ArgumentList 'server.js' -WorkingDirectory '%CD%' -WindowStyle Hidden"
-
-timeout /t 4 >nul
-echo [yogurt-shell] 已尝试在后台启动，日志：data\panel.out.log
-start "" http://127.0.0.1:3090/
+if "%CODE%"=="0" (
+  rem open the panel in the default browser
+  for /f "usebackq tokens=1,2" %%a in (`node scripts\panel-info.js`) do (
+    start "" "http://%%b:%%a/"
+  )
+) else (
+  pause
+)
+exit /b %CODE%

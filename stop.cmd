@@ -1,6 +1,18 @@
 @echo off
-chcp 65001 >nul
+rem Yogurt Shell - stop panel gracefully (stops accounts first)
+rem Messages come from the Node helper; this file stays ASCII-only.
 setlocal
 cd /d "%~dp0"
-node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('data/config.json','utf8')).panel.port;fetch('http://127.0.0.1:'+p+'/api/panel/shutdown',{method:'POST'}).then(r=>r.text()).then(t=>console.log('已请求停止，面板会先停掉所有账号：'+t)).catch(e=>console.log('面板似乎没在运行：'+e.message));"
-timeout /t 2 >nul
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [yogurt-shell] Node.js not found. Install Node.js 18+ first: https://nodejs.org/
+  pause
+  exit /b 1
+)
+
+node scripts\stop-panel.js
+set "CODE=%errorlevel%"
+if not "%CODE%"=="0" echo [yogurt-shell] stop failed with code %CODE%
+ping -n 3 127.0.0.1 >nul 2>&1
+exit /b %CODE%

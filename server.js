@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const http = require('http');
 const store = require('./src/store');
 const { LogBus } = require('./src/logbus');
 const { Supervisor } = require('./src/supervisor');
@@ -28,6 +29,25 @@ function stamp() {
 
 function isWildcardHost(host) {
   return host === '0.0.0.0' || host === '::' || host === '[::]';
+}
+
+// 端口上是不是已经有一个面板在跑（设了令牌时 /api/health 也放行；返回 401 同样说明它在）
+function probeHealth(host, port) {
+  return new Promise((resolve) => {
+    const target = isWildcardHost(host) ? '127.0.0.1' : host;
+    const req = http.request({ host: target, port, path: '/api/health', method: 'GET', timeout: 1500 }, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
 }
 
 // 监听 0.0.0.0 时，列出本机各网卡的可访问地址，方便手机/另一台机器直接用
@@ -106,6 +126,16 @@ async function main() {
     });
   }
 
+  // 端口上已经有面板在跑？直接说清楚然后退出，别再抛 EADDRINUSE 让人猜
+  const alive = await probeHealth(host, port).catch(() => null);
+  if (alive && (alive.status === 200 || alive.status === 401)) {
+    const shownHost = isWildcardHost(host) ? '127.0.0.1' : host;
+    console.log(`[${stamp()}] 面板已经在运行（http://${shownHost}:${port}/），本进程直接退出。`);
+    console.log('  要重启：在面板里点「⟳ 重启面板」，或先停掉（./stop.sh / stop.cmd）再启动');
+    console.log('  要换端口：node server.js --port 3091');
+    process.exit(0);
+  }
+
   let shuttingDown = false;
   // systemd 托管的进程不能自己重启：它退出的同时 systemd 也会拉起一份，两边抢端口
   const underSystemd = Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM);
@@ -149,9 +179,12 @@ async function main() {
   await new Promise((resolve, reject) => {
     server.once('error', (err) => {
       if (err.code === 'EADDRINUSE') {
+        const shownHost = isWildcardHost(host) ? '127.0.0.1' : host;
         reject(
           new Error(
-            `端口 ${port} 已被占用：可能面板已经在运行（先打开 http://${host}:${port}/ 看看），或用 --port 换一个端口`
+            `端口 ${port} 已被占用（监听地址 ${host}）：多半是另一个面板实例或别的程序。\n` +
+              `  先打开 http://${shownHost}:${port}/ 看看；要停掉它用 ./stop.sh（会自动带访问令牌）或 stop.cmd；\n` +
+              `  想换端口：node server.js --port 3091`
           )
         );
       } else if (err.code === 'EACCES') {

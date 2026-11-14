@@ -885,12 +885,14 @@ function settingsModal() {
               ? 'systemd 用户服务'
               : st.method === 'windows-startup-shortcut'
                 ? '启动文件夹快捷方式'
-                : String(st.method || '未知');
+                : st.method === 'crontab-reboot'
+                  ? 'crontab @reboot'
+                  : String(st.method || '未知');
           const parts = [st.enabled ? '<b style="color:var(--accent)">已开启</b>' : '<b>未开启</b>', '方式：' + methodText];
           if (st.target) parts.push('位置：<span class="mono">' + esc(st.target) + '</span>');
           aStatus.innerHTML = parts.join(' · ') + (st.hint ? '<div class="hint">' + esc(st.hint) + '</div>' : '');
           const handover = $('#a-handover', body);
-          if (handover) handover.style.display = st.platform === 'linux' && st.supported ? '' : 'none';
+          if (handover) handover.style.display = st.method === 'systemd-user-unit' ? '' : 'none';
           $('#a-enable', body).disabled = Boolean(st.enabled) || !st.supported;
           $('#a-disable', body).disabled = !st.enabled;
         };

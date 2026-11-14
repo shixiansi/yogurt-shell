@@ -393,6 +393,32 @@ check('parseProxy：拒绝 socks 等不支持的协议', () => {
   eq(threw, true);
 });
 
+// ---------- 12. 自启与停止脚本 ----------
+console.log('\n[12] 自启与停止');
+check('crontab 兜底行包含 @reboot / server.js / 日志', () => {
+  const autostart = require('../src/autostart');
+  const line = autostart.__test.cronLine();
+  if (!/^@reboot /.test(line)) throw new Error('不是 @reboot 行：' + line);
+  if (!/server\.js/.test(line)) throw new Error('没指向 server.js：' + line);
+  if (!/panel\.out\.log/.test(line)) throw new Error('没写日志：' + line);
+});
+check('systemd unit 关键字段齐全', () => {
+  const autostart = require('../src/autostart');
+  const unit = autostart.unitContent();
+  for (const key of ['[Unit]', '[Service]', '[Install]', 'ExecStart=', 'WorkingDirectory=', 'WantedBy=default.target']) {
+    if (!unit.includes(key)) throw new Error('unit 缺 ' + key);
+  }
+});
+check('stop 脚本会带令牌，start 脚本会查 pid/端口', () => {
+  const fs2 = require('fs');
+  const read = (name) => fs2.readFileSync(path.join(__dirname, '..', name), 'utf8');
+  if (!/x-panel-token/.test(read('stop.sh'))) throw new Error('stop.sh 没带 x-panel-token');
+  if (!/x-panel-token/.test(read('stop.cmd'))) throw new Error('stop.cmd 没带 x-panel-token');
+  const bg = read('start-background.sh');
+  if (!/panel\.pid/.test(bg)) throw new Error('start-background.sh 没检查 pid 文件');
+  if (!/EADDRINUSE/.test(bg)) throw new Error('start-background.sh 没检查端口占用');
+});
+
 // ---------- 汇总 ----------
 console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
 if (failures.length) {

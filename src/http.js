@@ -526,8 +526,11 @@ function createServer(ctx) {
         if (action === 'enable') return sendJson(res, 200, { ok: true, status: await autostart.enable() });
         if (action === 'disable') return sendJson(res, 200, { ok: true, status: await autostart.disable() });
         if (action === 'handover') {
-          if (process.platform !== 'linux') {
-            return sendJson(res, 400, { error: '只有 Linux + systemd 需要「交给 systemd」' });
+          const current = await autostart.status();
+          if (process.platform !== 'linux' || current.method !== 'systemd-user-unit') {
+            return sendJson(res, 400, {
+              error: '只有 systemd 托管的环境才需要「交给 systemd」：当前是 ' + (current.method || '未知'),
+            });
           }
           const status = await autostart.enable();
           const cmd = autostart.handoverCommand();
@@ -651,7 +654,10 @@ function createServer(ctx) {
     const url = new URL(req.url, 'http://' + (req.headers.host || '127.0.0.1'));
     try {
       if (url.pathname.startsWith('/api/')) {
-        if (!requireAuth(req, url)) return sendJson(res, 401, { error: '需要访问令牌', authRequired: true });
+        // /api/health 不校验令牌：用来判断「面板是不是已经在跑」，不含任何敏感信息
+        if (url.pathname !== '/api/health' && !requireAuth(req, url)) {
+          return sendJson(res, 401, { error: '需要访问令牌', authRequired: true });
+        }
         await handleApi(req, res, url);
         return;
       }

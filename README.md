@@ -57,9 +57,13 @@ chmod +x start.sh stop.sh scripts/*.sh     # 从 Windows 拷过去时尤其需�
 
 | 平台 | 一键后台启动 | 说明 |
 | --- | --- | --- |
-| Windows | 双击 `start-background.cmd` | 隐藏窗口启动，输出写 `data\panel.out.log`，顺手打开面板 |
-| Linux / macOS | `./start-background.sh` | nohup 后台启动，pid 记在 `data/runtime/panel.pid`，日志在 `data/panel.out.log` |
+| Windows | 双击 `start-background.cmd` | 隐藏窗口启动；已在跑就直接打开面板；失败会打印日志尾部 |
+| Linux / macOS | `./start-background.sh` | 同上（内部都是 `scripts/start-background.js`） |
 | 任意平台 | 面板「⚙ 设置 → 后台运行 / 开机自启」 | 「转到后台运行」= 重启并脱离当前终端；「开启开机自启」= 下次登录自动跑 |
+
+这些脚本都会**自动读 `data/config.json`**：端口、监听地址、`panel.token` 全都自己拿，
+所以「设了访问令牌导致 `./stop.sh` 停不掉」「端口被改过却找错地址」这类问题不会再出现；
+启动前还会先探一下 `/api/health`——**已经在跑就不再起第二个**，端口被别的程序占着会直接说明白。
 
 ```bash
 # Linux 也可以交给 systemd（面板里同样有「交给 systemd 托管」按钮）
@@ -242,7 +246,9 @@ yogurt-shell/
 **面板里点一下就行**：⚙ 设置 →「后台运行 / 开机自启」→「开启开机自启」（会显示装到了哪里、用什么方式；再点「关闭开机自启」即可移除）。
 
 - Windows：往「启动」文件夹放一个指向 `node server.js` 的快捷方式（窗口最小化），登录后自动跑；
-- Linux：写 `~/.config/systemd/user/yogurt-shell.service` 并 `systemctl --user enable`，还想「未登录也跑」就再执行 `sudo loginctl enable-linger $USER`；
+- Linux 有 systemd：写 `~/.config/systemd/user/yogurt-shell.service` 并 `systemctl --user enable`，还想「未登录也跑」就再执行 `sudo loginctl enable-linger $USER`；
+- Linux **没有 systemd**（容器/精简系统，`systemctl` 会报 `Failed to connect to bus`）：自动退回 **crontab `@reboot`**（前提是 cron 服务在跑）；
+- 两者都没有：界面会直接说「做不了一键自启」，并提示用 `./start-background.sh`（容器可设 `restart: unless-stopped`）；
 - Linux + systemd 时还能点「交给 systemd 托管」：面板先退出、3 秒后由 systemd 拉起（一次点击完成切换，不用记命令）。
 
 命令行做法（等价）：
@@ -309,6 +315,9 @@ systemctl --user disable --now yogurt-shell   # 卸载
 | 日志里全是聊天内容 | 日志抽屉点「隐藏聊天」，或设置里把 `coreLogLevel` 调成 `INFO`/`WARN` |
 | 面板关掉后 yogurt 也跟着停了 | 这是设计：面板是守护进程，退出时会主动停掉所有账号，避免留下没人监管的 yogurt。想常驻用 systemd / 后台启动 |
 | 想停掉所有账号但保留面板 | 面板上逐个点「停止」；`stop.cmd` / `./stop.sh` 是连面板一起优雅退出 |
+| `./stop.sh` 报 `需要访问令牌` | 旧版脚本不带令牌；新版会自动读 `data/config.json` 的 `panel.token`。仍失败就核对那个值，或临时把 `panel.token` 清空再停 |
+| `bash scripts/install-autostart-systemd.sh` 报 `Failed to connect to bus` | 这台机器没有在跑 systemd（容器常见）。用 `./start-background.sh` 后台启动；或面板里「开启开机自启」，会自动改用 crontab `@reboot` |
+| `nohup node server.js` 立刻退出 / `Exit 1` / 报 `端口 3090 已被占用` | 已经有一个面板在跑。新版启动时会先探 `/api/health` 并提示「已经在运行」，端口被别人占也会说清楚；先 `./stop.sh` 或换 `--port` |
 | 面板被强杀后 yogurt 还在 | 重新启动面板会自动清理；或手动 `taskkill /IM yogurt.exe /F` / `pkill -f yogurt.kexe` |
 | 用 Docker 跑 yogurt 怎么办 | 面板管的是**进程**，不是容器。要么把面板和 yogurt 装进同一个镜像/容器（入口改成 panel → 它再拉起 yogurt），要么让面板直接管理宿主上的二进制。纯容器内的 yogurt，掉线时面板 kill 不到，需要改造成 `docker stop` 方案 |
 

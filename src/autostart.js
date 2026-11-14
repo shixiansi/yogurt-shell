@@ -3,13 +3,14 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const store = require('./store');
 
 // 开机自启 / 后台运行的落地实现：
-//   Windows → 在「启动」文件夹放一个指向 node server.js 的快捷方式（最小化）
-//   Linux   → 写 systemd 用户服务并按需 enable（有 systemd 时）
+//   Windows → 「启动」文件夹快捷方式
+//   Linux   → 有 systemd 用 systemd 用户服务；没有 systemd（容器/精简系统）退回 crontab @reboot
 const UNIT_NAME = 'yogurt-shell.service';
+const CRON_TAG = '# yogurt-shell-autostart';
 
 function windowsShortcutPath() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -34,12 +35,73 @@ function run(file, args, timeoutMs = 20000) {
 
 async function hasSystemd() {
   if (process.platform !== 'linux') return false;
-  if (!fs.existsSync('/run/systemd/system') && !process.env.INVOCATION_ID) {
-    // 容器里常见没有 systemd；再试一下 systemctl 是否可用
-    const res = await run('systemctl', ['--user', '--version'], 8000);
-    return res.ok;
+  // 只有 systemd 真正在跑（/run/systemd/system 存在）才谈得上 enable；
+  // 容器里常见「systemctl 能用但连不上 bus」，所以不能只判断命令存在
+  if (!fs.existsSync('/run/systemd/system')) return false;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
+  if (fs.existsSync(`/run/user/${uid}/bus`) || process.env.DBUS_SESSION_BUS_ADDRESS) return true;
+  const res = await run('systemctl', ['is-system-running'], 8000);
+  return res.ok || /running|degraded|starting/.test(res.stdout);
+}
+
+async function hasCrontab() {
+  if (process.platform !== 'linux') return false;
+  const res = await run('crontab', ['-l'], 8000);
+  return res.ok || /no crontab/i.test(res.stderr || '');
+}
+
+async function readCrontab() {
+  const res = await run('crontab', ['-l'], 8000);
+  return res.ok ? res.stdout : '';
+}
+
+function writeCrontab(text) {
+  return new Promise((resolve) => {
+    const child = spawn('crontab', ['-'], { windowsHide: true });
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d.toString()));
+    child.on('error', (err) => resolve({ ok: false, stderr: err.message }));
+    child.on('exit', (code) => resolve({ ok: code === 0, stderr }));
+    child.stdin.end(text);
+  });
+}
+
+function cronLine() {
+  const node = process.execPath;
+  const entry = path.join(store.ROOT, 'server.js');
+  const log = path.join(store.DATA_DIR, 'panel.out.log');
+  return `@reboot cd ${store.ROOT} && nohup "${node}" "${entry}" >> "${log}" 2>&1 &`;
+}
+
+async function crontabEnabled() {
+  const text = await readCrontab();
+  return text.split('\n').some((line) => line.includes(CRON_TAG));
+}
+
+async function enableCron() {
+  const current = await readCrontab();
+  const kept = current
+    .split('\n')
+    .filter((line) => !line.includes(CRON_TAG) && line.trim() !== cronLine().trim());
+  const next = [...kept.filter((line, idx) => idx < kept.length || line.trim()), `${cronLine()} ${CRON_TAG}`]
+    .join('\n')
+    .replace(/\n+$/, '');
+  const res = await writeCrontab(next + '\n');
+  if (!res.ok) throw new Error('写 crontab 失败：' + (res.stderr || '未知错误'));
+  return status();
+}
+
+async function disableCron() {
+  const current = await readCrontab();
+  const next = current
+    .split('\n')
+    .filter((line) => !line.includes(CRON_TAG))
+    .join('\n')
+    .replace(/\n+$/, '');
+  if (next.trim() || current.trim()) {
+    await writeCrontab(next + '\n');
   }
-  return true;
+  return status();
 }
 
 function unitContent() {
@@ -80,26 +142,47 @@ async function status() {
   }
 
   if (process.platform === 'linux') {
-    const supported = await hasSystemd();
-    const file = systemdUnitPath();
-    let enabled = false;
-    let running = false;
-    if (supported) {
+    const systemd = await hasSystemd();
+    if (systemd) {
+      const file = systemdUnitPath();
+      let enabled = false;
+      let running = false;
       const en = await run('systemctl', ['--user', 'is-enabled', UNIT_NAME], 8000);
       enabled = en.ok && /enabled/.test(en.stdout);
       const ac = await run('systemctl', ['--user', 'is-active', UNIT_NAME], 8000);
       running = ac.ok && /active/.test(ac.stdout);
+      return {
+        platform: 'linux',
+        supported: true,
+        method: 'systemd-user-unit',
+        enabled,
+        running,
+        target: file,
+        hint: '由 systemd 用户服务托管（崩溃自动拉起）；想让未登录也跑需 sudo loginctl enable-linger $USER',
+      };
     }
+
+    const cron = await hasCrontab();
+    if (cron) {
+      const enabled = await crontabEnabled();
+      return {
+        platform: 'linux',
+        supported: true,
+        method: 'crontab-reboot',
+        enabled,
+        running: null,
+        target: 'crontab（@reboot 一行）',
+        hint: '这台机器没有 systemd，改用 crontab @reboot 开机启动；需要 cron 服务在跑（部分容器默认没有）',
+      };
+    }
+
     return {
       platform: 'linux',
-      supported,
-      method: 'systemd-user-unit',
-      enabled,
-      running,
-      target: file,
-      hint: supported
-        ? '开启后由 systemd 用户服务托管（崩溃自动拉起）；想让未登录也跑需执行 loginctl enable-linger'
-        : '当前环境没有 systemd，只能手动后台运行（可用 start-background.sh）',
+      supported: false,
+      method: 'none',
+      enabled: false,
+      target: null,
+      hint: '这个环境既没有 systemd 也没有 crontab：请用 ./start-background.sh 后台启动（容器可设 restart: unless-stopped）',
     };
   }
 
@@ -147,7 +230,14 @@ async function enableLinux() {
 
 async function enable() {
   if (process.platform === 'win32') return enableWindows();
-  if (process.platform === 'linux') return enableLinux();
+  if (process.platform === 'linux') {
+    if (await hasSystemd()) return enableLinux();
+    if (await hasCrontab()) return enableCron();
+    throw new Error(
+      '这个环境既没有 systemd 也没有 crontab，做不了一键自启：用 ./start-background.sh 后台启动' +
+        '（容器里可以给容器设 restart: unless-stopped）'
+    );
+  }
   throw new Error('当前平台不支持一键自启');
 }
 
@@ -160,10 +250,12 @@ async function disable() {
   if (process.platform === 'linux') {
     if (await hasSystemd()) {
       await run('systemctl', ['--user', 'disable', UNIT_NAME], 20000);
+      fs.rmSync(systemdUnitPath(), { force: true });
+      await run('systemctl', ['--user', 'daemon-reload'], 20000);
+      return status();
     }
-    fs.rmSync(systemdUnitPath(), { force: true });
-    if (await hasSystemd()) await run('systemctl', ['--user', 'daemon-reload'], 20000);
-    return status();
+    if (await hasCrontab()) return disableCron();
+    throw new Error('当前环境没有 systemd / crontab，本来就没有可关的自启');
   }
   throw new Error('当前平台不支持一键自启');
 }
@@ -174,4 +266,14 @@ function handoverCommand() {
   return { file: 'systemctl', args: ['--user', 'restart', UNIT_NAME] };
 }
 
-module.exports = { status, enable, disable, handoverCommand, windowsShortcutPath, systemdUnitPath, unitContent };
+module.exports = {
+  status,
+  enable,
+  disable,
+  handoverCommand,
+  windowsShortcutPath,
+  systemdUnitPath,
+  unitContent,
+  // 给自测用
+  __test: { cronLine, hasSystemd, hasCrontab, crontabEnabled },
+};
