@@ -53,21 +53,18 @@ chmod +x start.sh stop.sh scripts/*.sh     # 从 Windows 拷过去时尤其需�
 
 启动后控制台会打印面板地址、数据目录、账号数量。**Ctrl+C 退出时会先停掉所有账号再退出**（保证不留无人监管的 yogurt）。
 
-想脱离终端常驻：
+想脱离终端常驻（**不用记命令**）：
+
+| 平台 | 一键后台启动 | 说明 |
+| --- | --- | --- |
+| Windows | 双击 `start-background.cmd` | 隐藏窗口启动，输出写 `data\panel.out.log`，顺手打开面板 |
+| Linux / macOS | `./start-background.sh` | nohup 后台启动，pid 记在 `data/runtime/panel.pid`，日志在 `data/panel.out.log` |
+| 任意平台 | 面板「⚙ 设置 → 后台运行 / 开机自启」 | 「转到后台运行」= 重启并脱离当前终端；「开启开机自启」= 下次登录自动跑 |
 
 ```bash
-# Linux：装成 systemd 用户服务（登录即启动，崩溃自动拉起）
+# Linux 也可以交给 systemd（面板里同样有「交给 systemd 托管」按钮）
 bash scripts/install-autostart-systemd.sh
-
-# 或者简单放后台
-nohup node server.js >> data/panel.out.log 2>&1 &
 ./stop.sh        # 优雅停止（先停账号，再退面板）
-```
-
-```bat
-:: Windows 后台启动
-cmd /c start "" /min cmd /c "cd /d E:\lagrangeV2\yogurt-shell && node server.js >> data\panel.out.log 2>&1"
-stop.cmd
 ```
 
 改端口：`node server.js --port 3091`，或改 `data/config.json` 里的 `panel.port`。
@@ -171,7 +168,10 @@ Yogurt 账号掉线，已停止进程
 - **从本机已安装的 yogurt 安装**（不联网）：填/选一个已有路径即可 —— 支持「含 yogurt 可执行文件的目录」、「可执行文件本身」、「本地 .zip」。面板会自动发现来源：已下载的 dist、`data/updates/*.zip`、项目同级目录里像 yogurt 的文件夹、以及各账号「导入现有目录」时记录的来源。安装同样会先停账号、把旧文件备份到 `data/backups/`、装完自动拉起；`data/dist/local-*` 只保留最近 2 份。
 - **从 GitHub 更新**：读 `SaltifyDev/yogurt-releases` 最新 release（`update.repo` 可改），按平台/架构自动选包 —— `yogurt-windows-x64.zip` / `yogurt-linux-x64.zip` / `yogurt-linux-arm64.zip` / `yogurt-macos-arm64.zip`（`update.asset` 留空即自动，填了则强制）。下载时用 release 的 `digest` 做 sha256 校验，解压到 `data/dist/<tag>/` 后逐账号替换（硬链接，同盘零拷贝），并补可执行权限。
 - **本地 zip 上传安装**：没网时手动下载 zip 从面板上传，带上传进度。
-- **镜像**：`github.com` 直连超时会自动换镜像（直连 → 已记住的镜像 → `https://gh-proxy.com/` → `https://ghfast.top/`），成功后把可用镜像记到配置里。
+- **GitHub 代理前缀**（更新弹窗里填，例如 `https://gh-proxy.com/`）——**下载和 `git fetch` 都走它**：
+  - 下载：请求变成「前缀 + release 链接」，且**优先走前缀**（填了通常意味着直连不通），失败再退直连和内置镜像；
+  - 面板更新：抓取地址变成「前缀 + 仓库地址」，用显式 refspec（`+refs/heads/main:refs/remotes/origin/main`）更新 `origin/分支`，所以 `git fetch` 也能过墙；`merge --ff-only` 逻辑不变；
+  - **HTTP 代理（可选）**：需要 Clash/V2Ray 这类隧道时再填，GitHub API、下载、git 都会用；面板里的配置**优先于**机器上的全局 git 配置——没配就显式传 `-c http.proxy=` 清空继承值，避免被机器上那个坏代理拖死。
 - **面板自身的更新**（同一弹窗顶部）：面板就是个 git 仓库，点「检查面板更新」会 `git fetch` 对比 `origin/<分支>`，列出落后几个提交和提交标题；点「拉取并更新」执行 `git fetch + merge --ff-only`（工作区有改动、或本地有分叉提交时会拒绝，不会强推你的改动），更新完提示重启面板生效（systemd 托管时提示 `systemctl --user restart yogurt-shell`）。没有 git、或项目是拷贝部署（不是仓库）时会直接说明原因。
 - **回滚**：`data/backups/` 里是每次替换前的旧文件，覆盖回账号目录再点「启动」即可。
 
@@ -197,6 +197,7 @@ yogurt-shell/
 ├── server.js                  # 入口：装配各模块 + HTTP 服务 + 定时任务
 ├── start.cmd / stop.cmd       # Windows 启动 / 优雅停止
 ├── start.sh  / stop.sh        # Linux、macOS 启动 / 优雅停止
+├── start-background.cmd/.sh   # 一键后台启动（不用记 nohup / start 命令）
 ├── src/
 │   ├── store.js               # 配置读写（data/config.json）、路径、端口分配
 │   ├── logbus.js              # 每账号环形日志缓冲 + 落盘轮转 + 事件推送
@@ -238,26 +239,26 @@ yogurt-shell/
 
 ## 9. 开机自启
 
-**Windows**
+**面板里点一下就行**：⚙ 设置 →「后台运行 / 开机自启」→「开启开机自启」（会显示装到了哪里、用什么方式；再点「关闭开机自启」即可移除）。
+
+- Windows：往「启动」文件夹放一个指向 `node server.js` 的快捷方式（窗口最小化），登录后自动跑；
+- Linux：写 `~/.config/systemd/user/yogurt-shell.service` 并 `systemctl --user enable`，还想「未登录也跑」就再执行 `sudo loginctl enable-linger $USER`；
+- Linux + systemd 时还能点「交给 systemd 托管」：面板先退出、3 秒后由 systemd 拉起（一次点击完成切换，不用记命令）。
+
+命令行做法（等价）：
 
 ```powershell
+# Windows
 powershell -ExecutionPolicy Bypass -File E:\lagrangeV2\yogurt-shell\scripts\install-autostart.ps1
 ```
 
-在「启动」文件夹里创建一个指向 `start.cmd` 的快捷方式（窗口最小化）。不想要就删掉那个 `.lnk`。
-想「不登录也跑」就用「任务计划程序」建登录时/开机时触发的任务，操作填 `start.cmd`，起始目录填项目目录。
-
-**Linux（systemd 用户服务）**
-
 ```bash
+# Linux
 bash scripts/install-autostart-systemd.sh
-# 卸载
-systemctl --user disable --now yogurt-shell && rm ~/.config/systemd/user/yogurt-shell.service
-# 不想等到登录才跑
-sudo loginctl enable-linger $USER
+systemctl --user disable --now yogurt-shell   # 卸载
 ```
 
-> 用 systemd 托管时，改完「设置 → 面板监听」请在 shell 里执行
+> 用 systemd 托管时，改完「设置 → 面板监听」请执行
 > `systemctl --user restart yogurt-shell`——面板里的「重启面板」按钮会自动禁用，否则两边会抢同一个端口。
 
 ---
@@ -291,12 +292,14 @@ sudo loginctl enable-linger $USER
 | --- | --- |
 | 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错（会明确提示 EADDRINUSE） |
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
+| 账号反复「异常退出」，日志里有 `bind` / `BindException` | 端口被别的进程占了。新版启动前会自检：是面板自己的遗留进程就自动清掉，是别人就报 `端口 3000 已被 pid=… 占用`；按提示换端口或结束那个进程即可 |
 | 点「二维码」显示"暂无二维码"但文件明明存在 | 老版本用 `<img src>` 直接取图，浏览器带不上令牌头会 401。新版改成带令牌 `fetch` 取图（并把令牌同步到 cookie），图片按 `qrcode.png` / `qr.png` / 目录里 `*qr*` 图片兜底查找；仍失败会显示真实原因（401/路径找不到）而不是笼统"暂无" |
 | 启动就崩：`未在 app-info.json 下找到自定义 AppInfo 文件` | `protocol.version` 是 `custom` 但账号目录里没有 `app-info.json`。点卡片上的「一键修复」：先尝试从 `data/template/` 或 `assets/` 补一份，补不到就把 `protocol.version` 改成内置版本（Linux `46494`）。也可手动 `cp assets/app-info.json data/accounts/<QQ号>/`。想看清到底缺什么：`GET /api/accounts/<QQ号>/diagnostics` 会列出目录、协议版本、以及每个 app-info 来源是否存在 |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |
 | 掉线判定没生效 | 该账号的 `config.json` 里 `milky.http.port` 与面板端口不一致；重启账号让配置生效 |
 | 改成 `0.0.0.0` 没效果、日志里还是 127.0.0.1 | 见上面「两个 host 别搞混」：① 面板 host/port 只在启动时读，改完要重启面板；② 接管后生效的是 `data/accounts/<QQ号>/config.json`，旧目录那份已经作废；③ 日志里的 127.0.0.1 是客户端来源 IP，本来就不会变。以账号卡片的「实际监听」和 yogurt 的 `Listen Address` 为准 |
-| 更新失败 `fetch failed` | `github.com` 不通，填镜像前缀（如 `https://gh-proxy.com/`），或改用「本地 zip 安装」 |
+| 更新失败 `fetch failed` | `github.com` 不通：在更新弹窗填「GitHub 代理前缀」（如 `https://gh-proxy.com/`），或用「本地 zip / 本机已安装的 yogurt」安装；Release API（`api.github.com`）都不通时还能用本机安装 |
+| 面板更新 `git fetch` 失败 | 同上，前缀会同时用在 git 上；企业网需要 HTTP 代理就填「HTTP 代理」那一栏（面板配置会覆盖机器全局 git 代理） |
 | 面板更新按钮是灰的 / 提示有未提交改动 | 自动更新只做快进合并，工作区必须干净。`git status` 看看，处理后再点；手工改过源码就直接 `git stash` 或提交 |
 | 面板更新提示「不是 git 仓库」 | 项目是拷贝部署的，没有 .git；改成 `git clone` 部署，或手动拷代码覆盖 |
 | 更新失败「压缩包里没有…」 | 下错了平台的包；面板默认按平台自动选包，`update.asset` 别乱填 |

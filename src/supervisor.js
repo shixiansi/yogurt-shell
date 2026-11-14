@@ -141,6 +141,30 @@ class Supervisor extends EventEmitter {
     return account;
   }
 
+  // 启动前确认端口没被占：是我们自己的遗留进程就清掉，是别人就明确报错
+  // （否则 yogurt 只会以 bind 失败退出，用户完全看不出原因）
+  async ensurePortFree(account, target) {
+    const port = Number(target.port);
+    if (!port) return;
+    const { findPortOwner } = require('./listen');
+    const owner = await findPortOwner(port);
+    if (!owner || !owner.pid || owner.pid === process.pid) return;
+    const { listYogurtProcesses, killPid } = require('./procs');
+    const all = await listYogurtProcesses();
+    const hit = all.find((proc) => proc.pid === owner.pid);
+    const ours = hit && String(hit.exePath || '').toLowerCase().startsWith(store.DATA_DIR.toLowerCase());
+    if (ours) {
+      this.pushLog(account, 'WARN', `[shell] 端口 ${port} 被本面板的遗留进程 pid=${owner.pid} 占用，先结束它`);
+      await killPid(owner.pid);
+      await sleep(800);
+      return;
+    }
+    throw new Error(
+      `端口 ${port} 已被 pid=${owner.pid}${hit && hit.exePath ? '（' + hit.exePath + '）' : ''} 占用：` +
+        '先停掉那个进程，或在这个账号的 config.json 里把 milky.http.port 换成别的端口'
+    );
+  }
+
   // ---- 启动 ----
   async start(id, { silent = false } = {}) {
     const account = store.findAccount(id);
@@ -156,6 +180,7 @@ class Supervisor extends EventEmitter {
     }
     this.syncPortFromConfig(account);
     const target = this.resolveTarget(account);
+    await this.ensurePortFree(account, target);
 
     const dir = store.accountDir(account);
     fs.mkdirSync(dir, { recursive: true });
@@ -272,7 +297,7 @@ class Supervisor extends EventEmitter {
       if (/app-info\.json/i.test(text)) {
         return '提示：账号目录缺少 app-info.json（protocol.version = custom 时必需）——改成内置版本，或放一份 app-info.json';
       }
-      if (/Address already in use|EADDRINUSE|端口.*占用/i.test(text)) {
+      if (/Address already in use|EADDRINUSE|BindException|端口.*占用|bind/i.test(text)) {
         return '提示：端口被占用，改 milky.http.port 或结束占用该端口的进程';
       }
       if (/签名|signing|signApi/i.test(text) && /(失败|错误|error|invalid|异常)/i.test(text)) {

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const store = require('./store');
 const platform = require('./platform');
+const netclient = require('./netclient');
 const { extractZip } = require('./zipx');
 
 const UA = 'yogurt-shell/1.0 (+local panel)';
@@ -43,17 +44,18 @@ function compareVersions(a, b) {
   return 0;
 }
 
-async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000) {
-  const res = await fetch(url, {
-    ...opts,
-    headers: { 'User-Agent': UA, Accept: '*/*', ...(opts.headers || {}) },
-    signal: AbortSignal.timeout(timeoutMs),
+// 统一的下载/检查入口：走 netclient，自动带上配置里的代理
+function proxyOf() {
+  const cfg = store.getConfig();
+  return ((cfg.update && cfg.update.proxy) || '').trim();
+}
+
+async function fetchJson(url, headers, timeoutMs) {
+  return netclient.readJson(url, {
+    headers: { 'User-Agent': UA, ...headers },
+    timeoutMs,
+    proxy: proxyOf(),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${String(text).slice(0, 200)}`);
-  }
-  return res;
 }
 
 class Updater extends EventEmitter {
@@ -160,10 +162,11 @@ class Updater extends EventEmitter {
     this.state.checking = true;
     this.beginProgress('查询 GitHub Releases…');
     try {
-      const res = await fetchWithTimeout(`https://api.github.com/repos/${repo}/releases/latest`, {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-      const json = await res.json();
+      const json = await fetchJson(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        { Accept: 'application/vnd.github+json' },
+        30000
+      );
       const assetName = this.assetName();
       const asset = (json.assets || []).find((a) => a.name === assetName) || null;
       const current = this.currentVersion();
@@ -198,14 +201,21 @@ class Updater extends EventEmitter {
     const mirror = (cfg.update.mirrorPrefix || '').trim();
     const withSlash = (p) => p.replace(/\/?$/, '/');
 
-    // 国内网络常见情况：api.github.com 可用，但 github.com 被墙 → 自动走镜像。
-    // 直连刚失败过就先跳过，省掉每次 15 秒的空等。
-    const candidates = [{ url, timeoutMs: 15000, mirror: null }];
-    if (mirror) candidates.push({ url: withSlash(mirror) + url, timeoutMs: 120000, mirror: withSlash(mirror) });
+    // 配了 GitHub 代理前缀就先走它（用户既然填了，多半是直连不通），再退直连和内置镜像。
+    // 直连刚失败过也挪到最后，省掉每次 15 秒空等。
+    const direct = { url, timeoutMs: 15000, mirror: null };
+    const mirrorCand = mirror ? { url: withSlash(mirror) + url, timeoutMs: 120000, mirror: withSlash(mirror) } : null;
+    const candidates = [];
+    if (mirrorCand) candidates.push(mirrorCand);
+    candidates.push(direct);
     for (const m of ['https://gh-proxy.com/', 'https://ghfast.top/']) {
+      if (mirrorCand && withSlash(m) === mirrorCand.mirror) continue;
       candidates.push({ url: withSlash(m) + url, timeoutMs: 120000, mirror: withSlash(m) });
     }
-    if (this.directBlockedUntil > Date.now()) candidates.push(candidates.shift());
+    if (!mirrorCand && this.directBlockedUntil > Date.now()) {
+      const idx = candidates.findIndex((c) => !c.mirror);
+      if (idx >= 0) candidates.push(candidates.splice(idx, 1)[0]);
+    }
 
     let lastErr = null;
     for (let index = 0; index < candidates.length; index += 1) {
@@ -218,13 +228,16 @@ class Updater extends EventEmitter {
             message: '切换下载源：' + (candidate.mirror ? candidate.mirror : '直连 github.com'),
           });
         }
-        const res = await fetchWithTimeout(candidate.url, {}, candidate.timeoutMs);
-        const total = Number(res.headers.get('content-length') || 0);
+        const res = await netclient.openRequest(candidate.url, { timeoutMs: candidate.timeoutMs, proxy: proxyOf() });
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`HTTP ${res.status}（${candidate.mirror || '直连'}）`);
+        }
+        const total = Number(res.headers['content-length'] || 0);
         const chunks = [];
         let received = 0;
         this.setProgress({ phase: 'downloading', percent: 3, received: 0, total, message: `开始下载 ${filename}…` });
-        for await (const chunk of res.body) {
-          const buf = Buffer.from(chunk);
+        for await (const chunk of res.stream) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           chunks.push(buf);
           received += buf.length;
           const percent = total > 0 ? 3 + (received / total) * 85 : Math.min(88, 3 + (received / (8 * 1024 * 1024)) * 60);

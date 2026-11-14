@@ -172,6 +172,74 @@ function describeMismatch(expectedHost, expectedPort, listenList) {
   return null;
 }
 
+// ---- 查「谁占了这个端口」（启动前自检用）----
+function listenInodeForPort(port, procRoot = '/proc') {
+  for (const file of ['tcp', 'tcp6']) {
+    let text = '';
+    try {
+      text = fs.readFileSync(`${procRoot}/net/${file}`, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const row of parseProcNetTcp(text)) {
+      if (row.state !== '0A') continue;
+      if (row.port === Number(port)) return row.inode;
+    }
+  }
+  return null;
+}
+
+function pidForInode(inode, procRoot = '/proc') {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(procRoot);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const fdDir = path.join(procRoot, entry, 'fd');
+    let fds = [];
+    try {
+      fds = fs.readdirSync(fdDir);
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      let target = '';
+      try {
+        target = fs.readlinkSync(path.join(fdDir, fd));
+      } catch {
+        continue;
+      }
+      if (target === `socket:[${inode}]`) return Number(entry);
+    }
+  }
+  return null;
+}
+
+function netstatText() {
+  return new Promise((resolve) => {
+    execFile('netstat', ['-ano', '-p', 'tcp'], { windowsHide: true, timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      resolve(err && !stdout ? '' : String(stdout || ''));
+    });
+  });
+}
+
+async function findPortOwner(port) {
+  if (!port) return null;
+  if (process.platform === 'win32') {
+    const rows = parseNetstat(await netstatText()).filter((r) => r.port === Number(port));
+    return rows.length ? { pid: rows[0].pid, addr: rows[0].addr } : null;
+  }
+  if (process.platform === 'linux') {
+    const inode = listenInodeForPort(port);
+    if (!inode) return null;
+    return { pid: pidForInode(inode), inode };
+  }
+  return null;
+}
+
 module.exports = {
   listenAddresses,
   listenLinux,
@@ -181,4 +249,7 @@ module.exports = {
   decodeHexAddr,
   isWildcard,
   describeMismatch,
+  findPortOwner,
+  listenInodeForPort,
+  pidForInode,
 };

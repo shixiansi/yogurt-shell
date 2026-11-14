@@ -20,6 +20,13 @@ jobs:
           node-version: 22
       - name: 平台无关自测（平台映射 / /proc 解析 / 内置 zip / 版本比较 / 采样聚合）
         run: node scripts/selftest.js
+      - name: shell 脚本语法
+        if: runner.os == 'Linux'
+        run: |
+          bash -n start.sh
+          bash -n stop.sh
+          bash -n start-background.sh
+          bash -n scripts/install-autostart-systemd.sh
 
   panel-smoke:
     name: panel smoke (ubuntu)

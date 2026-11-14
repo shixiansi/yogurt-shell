@@ -789,6 +789,19 @@ function settingsModal() {
     </div>
 
     <div class="section">
+      <h3>后台运行 / 开机自启</h3>
+      <div class="desc">不用敲命令：把面板转到后台（脱离当前终端），或设成开机/登录后自动运行。</div>
+      <div id="a-status" class="hint">正在读取…</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="a-background">转到后台运行</button>
+        <button class="btn primary" id="a-enable">开启开机自启</button>
+        <button class="btn" id="a-disable">关闭开机自启</button>
+        <button class="btn" id="a-handover" style="display:none">交给 systemd 托管</button>
+      </div>
+      <div class="hint" id="a-msg"></div>
+    </div>
+
+    <div class="section">
       <h3>邮件通知</h3>
       <div class="desc">账号掉线 / 进程异常退出时发邮件。支持 465 隐式 TLS、587 STARTTLS。</div>
       <label class="check"><input type="checkbox" id="m-enabled" ${mail.enabled ? 'checked' : ''}/> 启用邮件通知</label>
@@ -861,6 +874,75 @@ function settingsModal() {
         } else {
           restartBtn.onclick = () => restartPanel(pMsg);
         }
+
+        // ---- 后台运行 / 开机自启 ----
+        const aStatus = $('#a-status', body);
+        const aMsg = $('#a-msg', body);
+        const renderAutostart = (st) => {
+          state.autostart = st;
+          const methodText =
+            st.method === 'systemd-user-unit'
+              ? 'systemd 用户服务'
+              : st.method === 'windows-startup-shortcut'
+                ? '启动文件夹快捷方式'
+                : String(st.method || '未知');
+          const parts = [st.enabled ? '<b style="color:var(--accent)">已开启</b>' : '<b>未开启</b>', '方式：' + methodText];
+          if (st.target) parts.push('位置：<span class="mono">' + esc(st.target) + '</span>');
+          aStatus.innerHTML = parts.join(' · ') + (st.hint ? '<div class="hint">' + esc(st.hint) + '</div>' : '');
+          const handover = $('#a-handover', body);
+          if (handover) handover.style.display = st.platform === 'linux' && st.supported ? '' : 'none';
+          $('#a-enable', body).disabled = Boolean(st.enabled) || !st.supported;
+          $('#a-disable', body).disabled = !st.enabled;
+        };
+        api('/api/panel/autostart')
+          .then((d) => renderAutostart(d.status))
+          .catch((err) => {
+            aStatus.textContent = err.message;
+          });
+
+        $('#a-enable', body).onclick = async () => {
+          aMsg.textContent = '正在安装自启…';
+          try {
+            const d = await api('/api/panel/autostart', { method: 'POST', body: { action: 'enable' } });
+            renderAutostart(d.status);
+            aMsg.textContent = '已开启开机自启';
+          } catch (err) {
+            aMsg.textContent = '失败：' + err.message;
+          }
+        };
+        $('#a-disable', body).onclick = async () => {
+          aMsg.textContent = '正在移除自启…';
+          try {
+            const d = await api('/api/panel/autostart', { method: 'POST', body: { action: 'disable' } });
+            renderAutostart(d.status);
+            aMsg.textContent = '已关闭开机自启';
+          } catch (err) {
+            aMsg.textContent = '失败：' + err.message;
+          }
+        };
+        $('#a-background', body).onclick = () => restartPanel(aMsg);
+        $('#a-handover', body).onclick = async () => {
+          if (!confirm('交给 systemd 管理？\n面板会先退出，3 秒后由 systemd 拉起（期间 bot 会短暂离线）。')) return;
+          aMsg.textContent = '正在交接…';
+          try {
+            await api('/api/panel/autostart', { method: 'POST', body: { action: 'handover' } });
+          } catch (err) {
+            aMsg.textContent = '失败：' + err.message;
+            return;
+          }
+          for (let i = 0; i < 30; i += 1) {
+            await new Promise((r) => setTimeout(r, 800));
+            try {
+              const res = await fetch('/api/health');
+              if (res.ok) {
+                aMsg.textContent = '已由 systemd 接管';
+                location.reload();
+                return;
+              }
+            } catch {}
+          }
+          aMsg.textContent = 'systemd 没把面板拉起来，检查 systemctl --user status yogurt-shell';
+        };
 
         $('#m-save', body).onclick = async () => {
           try {
@@ -996,7 +1078,7 @@ function panelUpdateHtml() {
   const canApply = behind > 0 && p.dirty !== true;
 
   return `<h3>面板自身更新</h3>
-    <div class="desc">面板就是 <span class="mono">${esc(p.remoteUrl || '本仓库')}</span> 的 <span class="mono">${esc(p.branch || 'main')}</span> 分支，直接 <span class="mono">git fetch + 快进合并</span> 更新代码；更新后需要重启面板才生效。</div>
+    <div class="desc">面板就是 <span class="mono">${esc(p.remoteUrl || '本仓库')}</span> 的 <span class="mono">${esc(p.branch || 'main')}</span> 分支，直接 <span class="mono">git fetch + 快进合并</span> 更新代码；更新后需要重启面板才生效。拉取地址：<span class="mono">${esc(p.fetchUrl || p.mirrorPrefix || p.remoteUrl || 'origin')}</span>${p.proxy ? ` · 代理 <span class="mono">${esc(p.proxy)}</span>` : ''}</div>
     <div class="grid3">
       <div class="field"><label>当前提交</label><div class="mono">${esc((head.sha || '').slice(0, 7) || '未知')}</div><div class="hint">${esc(head.subject || '')}</div></div>
       <div class="field"><label>版本</label><div class="mono">${esc(p.pkgVersion || '未知')}</div><div class="hint">${esc(head.date || '')}</div></div>
@@ -1145,7 +1227,22 @@ function updateModal() {
     <div class="section">
       <h3>从 GitHub 更新</h3>
       <div class="desc">下载 <span class="mono">${esc(u.asset || 'yogurt-<平台>.zip')}</span>，校验 sha256 后解压、替换各账号目录里的可执行文件（旧文件备份到 data/backups）。</div>
-      <div class="field"><label>下载镜像前缀（github.com 直连不通时自动使用）</label><input class="input" id="u-mirror" value="${esc((state.settings.update && state.settings.update.mirrorPrefix) || '')}" placeholder="https://gh-proxy.com/" /></div>
+      <div class="grid2">
+        <div class="field">
+          <label>GitHub 代理前缀（下载 + git 拉取都走它）</label>
+          <input class="input" id="u-mirror" value="${esc((state.settings.update && state.settings.update.mirrorPrefix) || '')}" placeholder="https://gh-proxy.com/" />
+          <div class="hint">下载会变成「前缀 + release 链接」，<span class="mono">git fetch</span> 会变成「前缀 + 仓库地址」</div>
+        </div>
+        <div class="field">
+          <label>HTTP 代理（可选）</label>
+          <input class="input" id="u-proxy" value="${esc((state.settings.update && state.settings.update.proxy) || '')}" placeholder="http://127.0.0.1:7890" />
+          <div class="hint">本机要走 Clash/V2Ray 这类 HTTP 代理时才填；填了会给 GitHub API 和下载用</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="u-net-save">保存网络设置</button>
+        <span class="hint" id="u-net-msg"></span>
+      </div>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="u-check">检查更新</button>
         <button class="btn primary" id="u-install">下载并安装${latest ? ' ' + esc(latest.tag) : '最新版'}</button>
@@ -1230,10 +1327,29 @@ function updateModal() {
         };
         const mirror = $('#u-mirror', body);
         if (mirror) {
-          mirror.onchange = async () => {
+          mirror.onchange = () => {
+            const msg = $('#u-net-msg', body);
+            if (msg) msg.textContent = '记得点「保存网络设置」';
+          };
+        }
+        const netSave = $('#u-net-save', body);
+        if (netSave) {
+          netSave.onclick = async () => {
+            const msg = $('#u-net-msg', body);
+            msg.textContent = '保存中…';
             try {
-              await api('/api/settings/yogurt', { method: 'PUT', body: {} });
-            } catch {}
+              await api('/api/settings/update', {
+                method: 'PUT',
+                body: {
+                  proxy: $('#u-proxy', body).value.trim(),
+                  mirrorPrefix: $('#u-mirror', body).value.trim(),
+                },
+              });
+              msg.textContent = '已保存，下次检查/下载生效';
+              applyState(await api('/api/state'));
+            } catch (err) {
+              msg.textContent = err.message;
+            }
           };
         }
         $('#u-install', body).onclick = async () => {

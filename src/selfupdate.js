@@ -8,12 +8,73 @@ const store = require('./store');
 // 面板自身的更新：把项目目录当成 git 仓库，比对 origin/<branch> 后快进合并。
 // 不依赖 gh、不写凭据；没装 git 或不是仓库时给出可读原因。
 
+function proxyConfig() {
+  const cfg = store.getConfig();
+  return ((cfg.update && cfg.update.proxy) || '').trim();
+}
+
+function mirrorPrefix() {
+  const cfg = store.getConfig();
+  const prefix = ((cfg.update && cfg.update.mirrorPrefix) || '').trim();
+  return prefix ? prefix.replace(/\/?$/, '/') : '';
+}
+
+// 配置里的代理/镜像优先于机器上的全局设置：始终显式传 -c，
+// 没配就把继承来的代理清空，避免「机器全局配了坏代理」把面板拖死。
+function gitProxyArgs(proxy) {
+  return ['-c', `http.proxy=${proxy || ''}`, '-c', `https.proxy=${proxy || ''}`];
+}
+
+function gitEnv(proxy) {
+  const env = { ...process.env };
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
+    if (proxy) env[key] = proxy;
+    else delete env[key];
+  }
+  return env;
+}
+
 function runGit(args, timeoutMs = 60000) {
+  const proxy = proxyConfig();
   return new Promise((resolve) => {
-    execFile('git', args, { cwd: store.ROOT, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, stdout: String(stdout || '').trim(), stderr: String(stderr || '').trim(), error: err });
-    });
+    execFile(
+      'git',
+      [...gitProxyArgs(proxy), ...args],
+      { cwd: store.ROOT, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: gitEnv(proxy) },
+      (err, stdout, stderr) => {
+        resolve({ ok: !err, stdout: String(stdout || '').trim(), stderr: String(stderr || '').trim(), error: err });
+      }
+    );
   });
+}
+
+async function originUrl() {
+  const res = await runGit(['config', '--get', 'remote.origin.url'], 8000);
+  return res.ok ? res.stdout : '';
+}
+
+// github.com 的仓库可以用 gh-proxy 这类前缀加速：https://gh-proxy.com/https://github.com/x/y.git
+function mirrorFor(url) {
+  const prefix = mirrorPrefix();
+  if (!prefix || !url) return '';
+  if (!/^https:\/\/github\.com\//i.test(url)) return '';
+  return prefix + url;
+}
+
+// 统一入口：有镜像就按「镜像 URL + 显式 refspec」拉，保证 origin/<branch> 也会更新
+async function fetchOrigin(branch) {
+  const origin = await originUrl();
+  const mirrored = mirrorFor(origin);
+  if (mirrored) {
+    return {
+      result: await runGit(
+        ['fetch', '--prune', mirrored, `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+        120000
+      ),
+      usedUrl: mirrored,
+    };
+  }
+  return { result: await runGit(['fetch', '--prune', 'origin'], 90000), usedUrl: origin || 'origin' };
 }
 
 // 解析 `git log --pretty=format:%h%x09%cI%x09%s`
@@ -98,10 +159,16 @@ async function status({ fetch = false } = {}) {
   const remoteUrlRes = await runGit(['config', '--get', `remote.origin.url`], 8000);
   const remoteUrl = remoteUrlRes.ok ? remoteUrlRes.stdout : null;
   let fetchError = null;
+  let fetchUrl = null;
 
   if (fetch) {
-    const res = await runGit(['fetch', '--prune', 'origin'], 90000);
-    if (!res.ok) fetchError = (res.stderr || res.error.message || '').split('\n').slice(-3).join('\n');
+    const { result, usedUrl } = await fetchOrigin(branch);
+    fetchUrl = usedUrl;
+    if (!result.ok) fetchError = (result.stderr || result.error.message || '').split('\n').slice(-3).join('\n');
+  } else {
+    // 没 fetch 也算一下「会用哪个地址去拉」，方便界面直接显示
+    const url = remoteUrl || (await originUrl());
+    fetchUrl = mirrorFor(url) || url || null;
   }
   const hasRemote = Boolean(remoteUrl);
   let counts = hasRemote ? await behindAhead(branch) : null;
@@ -114,6 +181,9 @@ async function status({ fetch = false } = {}) {
   return {
     available: true,
     gitVersion: git.version,
+    proxy: proxyConfig() || null,
+    mirrorPrefix: mirrorPrefix() || null,
+    fetchUrl,
     pkgVersion,
     branch,
     remoteUrl,
@@ -139,7 +209,7 @@ async function apply() {
   const branch = await currentBranch();
   const before = (await headInfo()).sha;
 
-  const fetchRes = await runGit(['fetch', '--prune', 'origin'], 90000);
+  const fetchRes = (await fetchOrigin(branch)).result;
   if (!fetchRes.ok) {
     throw new Error('git fetch 失败：' + (fetchRes.stderr || fetchRes.error.message).split('\n').slice(-2).join(' '));
   }

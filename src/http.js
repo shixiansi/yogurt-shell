@@ -8,6 +8,7 @@ const store = require('./store');
 const accountsMod = require('./accounts');
 const { listenAddresses, describeMismatch } = require('./listen');
 const selfupdate = require('./selfupdate');
+const autostart = require('./autostart');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -440,6 +441,26 @@ function createServer(ctx) {
           : null,
       });
     }
+    if (pathname === '/api/settings/update' && method === 'PUT') {
+      const body = await readJson(req);
+      const patch = {};
+      if (body.proxy !== undefined) patch.proxy = String(body.proxy || '').trim();
+      if (body.mirrorPrefix !== undefined) patch.mirrorPrefix = String(body.mirrorPrefix || '').trim();
+      if (body.asset !== undefined) patch.asset = String(body.asset || '').trim();
+      if (body.repo !== undefined) patch.repo = String(body.repo || '').trim();
+      // 代理先校验一下格式，别等到下载时才报错
+      if (patch.proxy) {
+        try {
+          require('./netclient').parseProxy(patch.proxy);
+        } catch (err) {
+          return sendJson(res, 400, { error: err.message });
+        }
+      }
+      store.updateConfig((c) => {
+        c.update = { ...c.update, ...patch };
+      });
+      return sendJson(res, 200, { ok: true, update: store.getConfig().update });
+    }
     if (pathname === '/api/settings/mail' && method === 'PUT') {
       const body = await readJson(req);
       const next = { ...cfg.mail, ...body };
@@ -490,6 +511,40 @@ function createServer(ctx) {
         return sendJson(res, 502, { ok: false, error: err.message });
       }
     }
+    // --- 开机自启 / 后台运行 ---
+    if (pathname === '/api/panel/autostart' && method === 'GET') {
+      try {
+        return sendJson(res, 200, { ok: true, status: await autostart.status() });
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message });
+      }
+    }
+    if (pathname === '/api/panel/autostart' && method === 'POST') {
+      const body = await readJson(req);
+      const action = body.action || 'enable';
+      try {
+        if (action === 'enable') return sendJson(res, 200, { ok: true, status: await autostart.enable() });
+        if (action === 'disable') return sendJson(res, 200, { ok: true, status: await autostart.disable() });
+        if (action === 'handover') {
+          if (process.platform !== 'linux') {
+            return sendJson(res, 400, { error: '只有 Linux + systemd 需要「交给 systemd」' });
+          }
+          const status = await autostart.enable();
+          const cmd = autostart.handoverCommand();
+          sendJson(res, 200, { ok: true, status, message: '已交给 systemd：面板马上退出，3 秒后由 systemd 拉起' });
+          const { spawn } = require('child_process');
+          spawn('sh', ['-c', `sleep 3; ${cmd.file} ${cmd.args.join(' ')}`], { detached: true, stdio: 'ignore' }).unref();
+          setTimeout(() => {
+            if (ctx.shutdown) ctx.shutdown('handover');
+          }, 600);
+          return;
+        }
+        return sendJson(res, 400, { error: '未知操作：' + action });
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
+      }
+    }
+
     // --- 面板自身更新（git pull） ---
     if (pathname === '/api/panel/update' && method === 'GET') {
       try {

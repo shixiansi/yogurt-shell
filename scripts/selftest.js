@@ -369,6 +369,30 @@ check('package.json 版本可读', () => {
   if (!v || !/^\d+\.\d+\.\d+/.test(v)) throw new Error('版本格式异常：' + v);
 });
 
+// ---------- 11. 代理 ----------
+console.log('\n[11] 代理解析');
+check('parseProxy：带/不带协议头、默认端口、Basic 认证', () => {
+  const { parseProxy } = require('../src/netclient');
+  const a = parseProxy('127.0.0.1:7890');
+  eq(a.host, '127.0.0.1');
+  eq(a.port, 7890);
+  eq(a.protocol, 'http:');
+  eq(parseProxy('http://proxy.local').port, 8080);
+  eq(parseProxy('http://user:pass@127.0.0.1:7890').auth, Buffer.from('user:pass').toString('base64'));
+  eq(parseProxy(''), null);
+  eq(parseProxy('   '), null);
+});
+check('parseProxy：拒绝 socks 等不支持的协议', () => {
+  const { parseProxy } = require('../src/netclient');
+  let threw = false;
+  try {
+    parseProxy('socks5://127.0.0.1:1080');
+  } catch (err) {
+    threw = /暂不支持/.test(err.message);
+  }
+  eq(threw, true);
+});
+
 // ---------- 汇总 ----------
 console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
 if (failures.length) {
