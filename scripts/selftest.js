@@ -430,11 +430,33 @@ check('.cmd 里不出现中文（chcp 65001 + 多字节会让 cmd 解析错乱�
   }
 });
 
-// ---------- 汇总 ----------
-console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
-if (failures.length) {
-  console.log(`\n${failures.length} 项失败，${pass} 项通过：`);
-  for (const f of failures) console.log(` - ${f.name}: ${f.error}`);
-  process.exit(1);
-}
-console.log(`\n全部通过：${pass} 项`);
+
+// ---------- 13. 端口探测（异步） ----------
+(async () => {
+  console.log('\n[13] 端口探测');
+  try {
+    const net = require('net');
+    const listen = require('../src/listen');
+    const server = net.createServer();
+    const port = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+    const busy = await listen.canBind('127.0.0.1', port);
+    await new Promise((r) => server.close(r));
+    const free = await listen.canBind('127.0.0.1', port);
+    eq(busy, false, '被占用时应返回 false');
+    eq(free, true, '释放后应返回 true');
+    pass += 1;
+    console.log('  ok   canBind 能识别端口占用 / 释放');
+  } catch (err) {
+    failures.push({ name: 'canBind', error: err.message });
+    console.log('  FAIL canBind -> ' + err.message);
+  }
+
+  // ---------- 汇总 ----------
+  console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
+  if (failures.length) {
+    console.log(`\n${failures.length} 项失败，${pass} 项通过：`);
+    for (const f of failures) console.log(` - ${f.name}: ${f.error}`);
+    process.exit(1);
+  }
+  console.log(`\n全部通过：${pass} 项`);
+})();

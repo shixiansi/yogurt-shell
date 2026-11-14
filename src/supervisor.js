@@ -67,6 +67,7 @@ class Supervisor extends EventEmitter {
         graceUntil: 0,
         intentionalStop: false,
         restartTimer: null,
+        starting: false,
         stdoutBuf: '',
         stderrBuf: '',
         lastLine: null,
@@ -141,32 +142,99 @@ class Supervisor extends EventEmitter {
     return account;
   }
 
-  // 启动前确认端口没被占：是我们自己的遗留进程就清掉，是别人就明确报错
-  // （否则 yogurt 只会以 bind 失败退出，用户完全看不出原因）
-  async ensurePortFree(account, target) {
-    const port = Number(target.port);
-    if (!port) return;
-    const { findPortOwner } = require('./listen');
-    const owner = await findPortOwner(port);
-    if (!owner || !owner.pid || owner.pid === process.pid) return;
+  // 等端口真的可以 bind 再启动。
+  // 只看 netstat 的 LISTEN 行是不够的：上一个进程刚被杀掉时连接还在 TIME_WAIT，
+  // yogurt 照样 bind 失败 —— 这就是「点几次都报端口占用、等 30 秒才好」的根因。
+  async waitPortReady(account, target, { timeoutMs = 30000 } = {}) {
+    const { canBind, findPortOwner } = require('./listen');
     const { listYogurtProcesses, killPid } = require('./procs');
-    const all = await listYogurtProcesses();
-    const hit = all.find((proc) => proc.pid === owner.pid);
-    const ours = hit && String(hit.exePath || '').toLowerCase().startsWith(store.DATA_DIR.toLowerCase());
-    if (ours) {
-      this.pushLog(account, 'WARN', `[shell] 端口 ${port} 被本面板的遗留进程 pid=${owner.pid} 占用，先结束它`);
-      await killPid(owner.pid);
-      await sleep(800);
-      return;
+    const port = Number(target.port);
+    const host = target.host;
+    if (!port) return;
+    if (await canBind(host, port)) return;
+
+    this.pushLog(account, 'INFO', `[shell] 端口 ${port} 现在不可用，等待释放（最多 ${Math.round(timeoutMs / 1000)}s）…`);
+
+    const startedAt = Date.now();
+    let lastLogAt = 0;
+    let foreignPid = 0;
+    let foreignHits = 0;
+    let killedOwn = false;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (await canBind(host, port)) {
+        const waited = Date.now() - startedAt;
+        if (waited > 1000) this.pushLog(account, 'INFO', `[shell] 端口 ${port} 已释放（等了 ${Math.round(waited / 1000)}s），开始启动`);
+        return;
+      }
+
+      const owner = await findPortOwner(port);
+      if (owner && owner.pid && owner.pid !== process.pid) {
+        const all = await listYogurtProcesses();
+        const hit = all.find((proc) => proc.pid === owner.pid);
+        const ours = hit && String(hit.exePath || '').toLowerCase().startsWith(store.DATA_DIR.toLowerCase());
+        if (ours && !killedOwn) {
+          killedOwn = true;
+          this.pushLog(account, 'WARN', `[shell] 端口 ${port} 被本面板的遗留进程 pid=${owner.pid} 占用，先结束它`);
+          await killPid(owner.pid);
+        } else if (!ours) {
+          // 别人的进程占着：等也没用，几次确认后直接报错，别让用户干等
+          if (owner.pid === foreignPid) foreignHits += 1;
+          else {
+            foreignPid = owner.pid;
+            foreignHits = 1;
+          }
+          if (foreignHits >= 3) {
+            throw new Error(
+              `端口 ${port} 被 pid=${owner.pid}${hit && hit.exePath ? '（' + hit.exePath + '）' : ''} 占用：` +
+                '先停掉那个进程，或把这个账号的 milky.http.port 换成别的端口'
+            );
+          }
+        }
+      }
+
+      if (Date.now() - lastLogAt > 5000) {
+        lastLogAt = Date.now();
+        const who = owner && owner.pid ? `pid=${owner.pid} 仍占着` : '上一个进程的连接还在 TIME_WAIT';
+        this.pushLog(account, 'WARN', `[shell] 端口 ${port} 暂时不可用（${who}），继续等…`);
+      }
+      await sleep(1000);
     }
+
+    const finalOwner = await findPortOwner(port);
     throw new Error(
-      `端口 ${port} 已被 pid=${owner.pid}${hit && hit.exePath ? '（' + hit.exePath + '）' : ''} 占用：` +
-        '先停掉那个进程，或在这个账号的 config.json 里把 milky.http.port 换成别的端口'
+      `端口 ${port} 在 ${Math.round(timeoutMs / 1000)} 秒内都没有释放` +
+        (finalOwner && finalOwner.pid ? `，被 pid=${finalOwner.pid} 占用` : '（多半是上一个进程的连接还在 TIME_WAIT，Linux 默认要等 60s）') +
+        '：稍等一下再点「启动」，或把这个账号的 milky.http.port 换成别的端口'
     );
   }
 
-  // ---- 启动 ----
-  async start(id, { silent = false } = {}) {
+  // ---- 启动（外层负责「启动中」状态与错误回落）----
+  async start(id, options = {}) {
+    const r = this.rt(id);
+    if (r.starting) throw new Error('这个账号正在启动中，请等它结束（正在等端口释放）');
+    const account = store.findAccount(id);
+    r.starting = true;
+    if (account && !r.proc) {
+      r.status = 'starting';
+      r.reason = '正在检查端口…';
+      this.emitState(account, r);
+    }
+    try {
+      return await this.startInner(id, options);
+    } catch (err) {
+      if (account && !r.proc) {
+        r.status = 'stopped';
+        r.reason = err.message;
+        this.emitState(account, r);
+      }
+      throw err;
+    } finally {
+      r.starting = false;
+    }
+  }
+
+  async startInner(id, { silent = false, portWaitMs } = {}) {
     const account = store.findAccount(id);
     if (!account) throw new Error('账号不存在：' + id);
     const r = this.rt(id);
@@ -180,7 +248,7 @@ class Supervisor extends EventEmitter {
     }
     this.syncPortFromConfig(account);
     const target = this.resolveTarget(account);
-    await this.ensurePortFree(account, target);
+    await this.waitPortReady(account, target, { timeoutMs: portWaitMs || 30000 });
 
     const dir = store.accountDir(account);
     fs.mkdirSync(dir, { recursive: true });
@@ -352,6 +420,18 @@ class Supervisor extends EventEmitter {
       await sleep(600);
     }
     if (!r.proc) {
+      // 进程没了不代表端口能立刻 bind：等它真正释放，后面的「启动」才不会再撞墙
+      const target = r.target || this.resolveTarget(account);
+      const { canBind } = require('./listen');
+      const waitFrom = Date.now();
+      while (Date.now() - waitFrom < 10000) {
+        if (await canBind(target.host, Number(target.port))) break;
+        await sleep(500);
+      }
+      const waitedMs = Date.now() - waitFrom;
+      if (waitedMs > 2000) {
+        this.pushLog(account, 'INFO', `[shell] 端口 ${target.port} 释放耗时 ${Math.round(waitedMs / 1000)}s（上个进程的连接在 TIME_WAIT）`);
+      }
       r.status = r.status === 'offline' ? 'offline' : 'stopped';
       this.emitState(account, r);
     }
@@ -588,7 +668,7 @@ class Supervisor extends EventEmitter {
       if (account.autoStart === false) continue;
       if (account.enabled === false) continue;
       try {
-        await this.start(account.id);
+        await this.start(account.id, { portWaitMs: 60000 });
         await sleep(800);
       } catch (err) {
         this.pushLog(account, 'ERROR', '[shell] 自动启动失败：' + err.message);

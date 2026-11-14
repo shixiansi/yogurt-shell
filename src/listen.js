@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const net = require('net');
 const { execFile } = require('child_process');
 
 // 查「进程实际在监听什么」，用来验证 config 里的 host 到底生效没有。
@@ -226,6 +227,28 @@ function netstatText() {
   });
 }
 
+// 端口现在能不能 bind（这才是「能不能启动」的唯一硬标准；
+// 只看 netstat 的 LISTEN 行会漏掉 TIME_WAIT —— 那就是「杀掉进程后要等 30 秒」的原因）
+function canBind(host, port) {
+  return new Promise((resolve) => {
+    const target = !host || host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+    const server = net.createServer();
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    server.once('error', () => done(false));
+    server.once('listening', () => server.close(() => done(true)));
+    try {
+      server.listen(Number(port), target);
+    } catch {
+      done(false);
+    }
+  });
+}
+
 async function findPortOwner(port) {
   if (!port) return null;
   if (process.platform === 'win32') {
@@ -250,6 +273,7 @@ module.exports = {
   isWildcard,
   describeMismatch,
   findPortOwner,
+  canBind,
   listenInodeForPort,
   pidForInode,
 };

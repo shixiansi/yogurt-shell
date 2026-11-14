@@ -119,12 +119,32 @@ async function main() {
 
   const port = Number(arg('port', process.env.YOGURT_SHELL_PORT || cfg.panel.port)) || 3090;
   const host = arg('host', cfg.panel.host || '127.0.0.1');
-  if (port !== cfg.panel.port || host !== cfg.panel.host) {
-    store.updateConfig((c) => {
-      c.panel.port = port;
-      c.panel.host = host;
-    });
+  // 命令行参数只对本次生效，不写回配置（避免「临时换个端口调试」把正式端口改掉）
+  const portFromArgs = process.argv.some((a) => a === '--port' || a.startsWith('--port='));
+  const hostFromArgs = process.argv.some((a) => a === '--host' || a.startsWith('--host='));
+  if (portFromArgs || hostFromArgs) {
+    console.log(`[${stamp()}] 本次使用 ${host}:${port}（命令行参数，未写入配置；要永久改请到面板「设置 → 面板监听」）`);
   }
+
+  // 同一个 data 目录只允许一个面板：两个实例会互相抢端口、互相关掉对方的 yogurt
+  const pidFile = path.join(store.PATHS.runtime, 'panel.pid');
+  try {
+    const other = Number(String(fs.readFileSync(pidFile, 'utf8')).trim());
+    if (Number.isFinite(other) && other > 0 && other !== process.pid) {
+      let alive = false;
+      try {
+        process.kill(other, 0);
+        alive = true;
+      } catch {}
+      if (alive) {
+        console.log(`[${stamp()}] 已经有一个面板在用这个数据目录（pid ${other}），本进程退出。`);
+        console.log('  同一个 data/ 下跑两个面板会互相抢端口、互相把对方的账号停掉。');
+        console.log('  · 想重启：先 ./stop.sh（Windows: stop.cmd）');
+        console.log('  · 想再开一个实例：复制一份完整的项目目录，用不同端口');
+        process.exit(1);
+      }
+    }
+  } catch {}
 
   // 端口上已经有面板在跑？直接说清楚然后退出，别再抛 EADDRINUSE 让人猜
   const alive = await probeHealth(host, port).catch(() => null);
@@ -139,7 +159,9 @@ async function main() {
   let shuttingDown = false;
   // systemd 托管的进程不能自己重启：它退出的同时 systemd 也会拉起一份，两边抢端口
   const underSystemd = Boolean(process.env.INVOCATION_ID || process.env.JOURNAL_STREAM);
-  const meta = { bindHost: host, bindPort: port, lanUrls: [], restarting: false, underSystemd };
+  // pm2 同理
+  const underPm2 = process.env.pm_id !== undefined || Boolean(process.env.PM2_HOME);
+  const meta = { bindHost: host, bindPort: port, lanUrls: [], restarting: false, underSystemd, underPm2 };
   const shutdown = async (reason) => {
     if (shuttingDown) return;
     shuttingDown = true;

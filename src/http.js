@@ -169,6 +169,7 @@ function createServer(ctx) {
         lanUrls: meta ? meta.lanUrls : [],
         tokenRequired: Boolean((cfg.panel.token || '').trim()),
         underSystemd: Boolean(meta && meta.underSystemd),
+        underPm2: Boolean(meta && meta.underPm2),
         platform: process.platform,
         node: process.version,
         cores: require('os').cpus().length,
@@ -224,6 +225,11 @@ function createServer(ctx) {
       if (restarting && meta && meta.underSystemd) {
         return sendJson(res, 409, {
           error: '面板由 systemd 托管，请用 `systemctl --user restart yogurt-shell`（面板里直接重启会和 systemd 抢端口）',
+        });
+      }
+      if (restarting && meta && meta.underPm2) {
+        return sendJson(res, 409, {
+          error: '面板由 pm2 托管，请用 `pm2 restart <名字>`（面板里直接重启会和 pm2 抢端口）',
         });
       }
       sendJson(res, 200, {

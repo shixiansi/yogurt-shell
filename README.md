@@ -71,7 +71,7 @@ bash scripts/install-autostart-systemd.sh
 ./stop.sh        # 优雅停止（先停账号，再退面板）
 ```
 
-改端口：`node server.js --port 3091`，或改 `data/config.json` 里的 `panel.port`。
+改端口：`node server.js --port 3091`（**只对本次生效**，不写回配置；要永久改用面板「设置 → 面板监听」）。
 
 ### 接管一个已经在跑的 yogurt
 
@@ -248,6 +248,7 @@ yogurt-shell/
 - Windows：往「启动」文件夹放一个指向 `node server.js` 的快捷方式（窗口最小化），登录后自动跑；
 - Linux 有 systemd：写 `~/.config/systemd/user/yogurt-shell.service` 并 `systemctl --user enable`，还想「未登录也跑」就再执行 `sudo loginctl enable-linger $USER`；
 - Linux **没有 systemd**（容器/精简系统，`systemctl` 会报 `Failed to connect to bus`）：自动退回 **crontab `@reboot`**（前提是 cron 服务在跑）；
+- **pm2 托管**（`pm_id` 存在）：面板会识别出「方式：pm2」，不会再让你在这里开自启，也不会执行面板内重启——统一用 `pm2 restart <名字>` / `pm2 save` + `pm2 startup`；
 - 两者都没有：界面会直接说「做不了一键自启」，并提示用 `./start-background.sh`（容器可设 `restart: unless-stopped`）；
 - Linux + systemd 时还能点「交给 systemd 托管」：面板先退出、3 秒后由 systemd 拉起（一次点击完成切换，不用记命令）。
 
@@ -266,6 +267,9 @@ systemctl --user disable --now yogurt-shell   # 卸载
 
 > 用 systemd 托管时，改完「设置 → 面板监听」请执行
 > `systemctl --user restart yogurt-shell`——面板里的「重启面板」按钮会自动禁用，否则两边会抢同一个端口。
+>
+> 同一个 `data/` 目录**只能跑一个面板**（新版启动时会用 `data/runtime/panel.pid` 检查并拒绝第二个实例）：
+> 两个实例会互相抢端口、互相把对方的账号停掉。要开第二个看板，请复制一份完整项目目录、用不同端口。
 
 ---
 
@@ -299,6 +303,8 @@ systemctl --user disable --now yogurt-shell   # 卸载
 | 面板打不开 | 端口被占：`node server.js --port 3091`；或看控制台报错（会明确提示 EADDRINUSE） |
 | 卡片一直「启动中」 | 看日志抽屉：可能是扫码登录没完成（用「二维码」按钮，或在底部输入验证码） |
 | 账号反复「异常退出」，日志里有 `bind` / `BindException` | 端口被别的进程占了。新版启动前会自检：是面板自己的遗留进程就自动清掉，是别人就报 `端口 3000 已被 pid=… 占用`；按提示换端口或结束那个进程即可 |
+| 杀掉账号后马上点「启动」，一直报端口占用，等半分钟才好 | 这是 **TIME_WAIT**：上一个进程的连接还没被内核回收，yogurt 就 bind 不上。新版会**自己等**（界面显示「启动中」，日志里每 5 秒写一次在等谁），最多 30 秒（开机自动拉起时 60 秒），不用你反复点 |
+| 更新面板后所有账号都停了 | 这是预期的：重启面板会先停账号，再由新进程重新拉起。如果没起来，多半就是上面那条 TIME_WAIT——现在会自动等待，不用手动点 |
 | 点「二维码」显示"暂无二维码"但文件明明存在 | 老版本用 `<img src>` 直接取图，浏览器带不上令牌头会 401。新版改成带令牌 `fetch` 取图（并把令牌同步到 cookie），图片按 `qrcode.png` / `qr.png` / 目录里 `*qr*` 图片兜底查找；仍失败会显示真实原因（401/路径找不到）而不是笼统"暂无" |
 | 启动就崩：`未在 app-info.json 下找到自定义 AppInfo 文件` | `protocol.version` 是 `custom` 但账号目录里没有 `app-info.json`。点卡片上的「一键修复」：先尝试从 `data/template/` 或 `assets/` 补一份，补不到就把 `protocol.version` 改成内置版本（Linux `46494`）。也可手动 `cp assets/app-info.json data/accounts/<QQ号>/`。想看清到底缺什么：`GET /api/accounts/<QQ号>/diagnostics` 会列出目录、协议版本、以及每个 app-info 来源是否存在 |
 | 掉线判定太灵敏 | 设置里把「连续失败次数」调大、或把探活间隔调长；`graceMs` 加长可避免启动期误判 |

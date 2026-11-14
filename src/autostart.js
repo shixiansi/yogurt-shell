@@ -127,7 +127,27 @@ function unitContent() {
   ].join('\n');
 }
 
+// pm2 托管的进程会带 pm_id：这类环境不要自己再搞自启/重启，交给 pm2
+function pm2Info() {
+  const id = process.env.pm_id;
+  if (id === undefined || id === '') return null;
+  return { id, name: process.env.name || process.env.pm_exec_path || 'yogurt-shell' };
+}
+
 async function status() {
+  const pm2 = pm2Info();
+  if (pm2) {
+    return {
+      platform: process.platform,
+      supported: true,
+      method: 'pm2',
+      enabled: true,
+      running: true,
+      target: `pm2（实例 id ${pm2.id}）`,
+      hint: '面板由 pm2 托管：开机自启/守护都归 pm2 管，重启用 pm2 restart <名字>（别用面板里的「重启面板」，pm2 会同时拉起，两边抢端口）',
+    };
+  }
+
   if (process.platform === 'win32') {
     const file = windowsShortcutPath();
     const exists = fs.existsSync(file);
@@ -229,6 +249,7 @@ async function enableLinux() {
 }
 
 async function enable() {
+  if (pm2Info()) throw new Error('面板由 pm2 托管：开机自启用 pm2 save + pm2 startup，不需要在这里开');
   if (process.platform === 'win32') return enableWindows();
   if (process.platform === 'linux') {
     if (await hasSystemd()) return enableLinux();
@@ -242,6 +263,7 @@ async function enable() {
 }
 
 async function disable() {
+  if (pm2Info()) throw new Error('面板由 pm2 托管：要停自启用 pm2 delete / pm2 unstartup，面板里不用改');
   if (process.platform === 'win32') {
     const file = windowsShortcutPath();
     fs.rmSync(file, { force: true });

@@ -893,8 +893,9 @@ function settingsModal() {
           aStatus.innerHTML = parts.join(' · ') + (st.hint ? '<div class="hint">' + esc(st.hint) + '</div>' : '');
           const handover = $('#a-handover', body);
           if (handover) handover.style.display = st.method === 'systemd-user-unit' ? '' : 'none';
-          $('#a-enable', body).disabled = Boolean(st.enabled) || !st.supported;
-          $('#a-disable', body).disabled = !st.enabled;
+          const isPm2 = st.method === 'pm2';
+          $('#a-enable', body).disabled = isPm2 || Boolean(st.enabled) || !st.supported;
+          $('#a-disable', body).disabled = isPm2 || !st.enabled;
         };
         api('/api/panel/autostart')
           .then((d) => renderAutostart(d.status))
@@ -922,7 +923,13 @@ function settingsModal() {
             aMsg.textContent = '失败：' + err.message;
           }
         };
-        $('#a-background', body).onclick = () => restartPanel(aMsg);
+        $('#a-background', body).onclick = () => {
+          if (state.server && state.server.underPm2) {
+            aMsg.textContent = '面板由 pm2 托管：重启用 `pm2 restart <名字>`，别再点后台启动（会抢端口）';
+            return;
+          }
+          restartPanel(aMsg);
+        };
         $('#a-handover', body).onclick = async () => {
           if (!confirm('交给 systemd 管理？\n面板会先退出，3 秒后由 systemd 拉起（期间 bot 会短暂离线）。')) return;
           aMsg.textContent = '正在交接…';
@@ -1014,6 +1021,12 @@ function settingsModal() {
 
 // 面板重启：发请求 → 等它回来 → 刷新页面（令牌可能刚改，刷新后会提示输入）
 async function restartPanel(msgEl) {
+  if (state.server && state.server.underPm2) {
+    const hint = '面板由 pm2 托管：请在服务器上执行 pm2 restart <名字>';
+    if (msgEl) msgEl.textContent = hint;
+    toast(hint, 'warn');
+    return;
+  }
   if (!confirm('重启面板会先停掉所有账号，2 秒后自动拉起并重新启动账号。继续？')) return;
   if (msgEl) msgEl.textContent = '正在重启…';
   try {
