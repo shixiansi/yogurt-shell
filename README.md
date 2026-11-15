@@ -183,11 +183,20 @@ Yogurt 账号掉线，已停止进程
 
 ---
 
-## 7. 多账号
+## 7. 多账号 / 接入向导
 
 - 每个账号独立目录：`data/accounts/<QQ号>/`（`config.json`、`app-info.json`、`session-store.json`、`qrcode.png`、该平台二进制）。
 - 二进制文件名按平台：Windows `yogurt.exe`，Linux/macOS `yogurt.kexe`（或 `yogurt`）——识别、启动、更新、备份都用同一套映射。
-- **`app-info.json`**：`protocol.version` 为 `custom` 时 yogurt 必须在账号目录里读到它，否则启动即 `IllegalStateException: 未在 app-info.json 下找到自定义 AppInfo 文件` 然后 SIGABRT。仓库里自带 `assets/app-info.json`，面板启动时自动写入 `data/template/`，创建/启动账号时缺了就自动补（日志里会有一行 `已自动从 … 补齐`）。想换协议版本就改 `protocol.version` 为内置值：Linux `46494` / `39038`，Mac `52194` / `52892`，此时不需要这个文件。
+- **设备指纹在建号时就钉住（重要）**：yogurt 在登录成功前每次启动都会重新随机 `guid`，短时间内会让服务端觉得「这个号在多台新设备登录」。
+  面板建号时会预写 `session-store.json`：**16 字节固定 guid + 空凭证 + 像人起的主机名**（`DESKTOP-1A2B3C` / `LAPTOP-…` / `annas-MacBook-Pro`）。
+  空凭证是刻意的——填假值会让 yogurt 走票据登录而不出二维码；登录成功后 yogurt 只更新凭证字段，`guid` / `deviceName` 原样保留。反复重启、扫码失败重试都不会换 guid。
+- **接入向导**：「＋ 添加账号」→ 填 QQ 号（可选签名令牌/备注）→ 创建后自动启动 → 直接弹出二维码 → 扫码上线；向导里逐步显示「已建号 / 已启动 / 等待扫码 / 已上线」。
+- **签名令牌**写在 `protocol.pcLagrangeSignToken`（`security` 段会被 yogurt 按自身 schema 清掉）。签名服务常见的两种拒绝，面板直接翻译成人话：
+  - `invalid or missing sign token (401)` → 令牌为空或无效，找签名服务要；
+  - `not allowed on this server (403)` → 这个 QQ 号没在签名服务白名单里，找提供者加白。
+- **掉线通知**文案带「设备身份已固定，重新扫码即可恢复：面板 → 该账号 → 二维码」；**不做自动重启**（autoRestart 默认关）——被踢后自动重连会不停刷新二维码，反而永远扫不上。
+- **老账号**：账号目录缺 `session-store.json` 时，点「一键修复」会补一份钉住 guid 的；已经有登录凭证的老账号不会被改动（动 guid 反而制造「设备更换」信号）。
+- **`app-info.json`**：`protocol.version` 为 `custom` 时 yogurt 必须在账号目录里读到它，否则启动即 `IllegalStateException: 未在 app-info.json 下找到自定义 AppInfo 文件` 然后 SIGABRT。仓库自带 `assets/app-info.json`，面板启动时写入 `data/template/`，创建/启动账号时缺了就自动补。
 - 端口自动分配、冲突校验；账号配置里的 `milky.http.port` 与面板记录双向同步。
 - 卡片上「配置」可以直接编辑该账号的 `config.json`（JSON 校验 + 保存后提示重启生效）。
 - 「删除」会把账号目录移动到 `data/trash/`，不直接销毁。

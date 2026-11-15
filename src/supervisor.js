@@ -368,6 +368,16 @@ class Supervisor extends EventEmitter {
       if (/Address already in use|EADDRINUSE|BindException|端口.*占用|bind/i.test(text)) {
         return '提示：端口被占用，改 milky.http.port 或结束占用该端口的进程';
       }
+      // 签名服务常见的两种拒绝，直接给出可操作结论
+      if (/invalid or missing sign token/i.test(text)) {
+        return '提示：签名 API 要求令牌，但 protocol.pcLagrangeSignToken 为空或无效——在卡片「配置」里填上签名服务给的令牌';
+      }
+      if (/not allowed on this server/i.test(text)) {
+        return '提示：这个 QQ 号没在签名服务白名单里（403）——找签名服务提供者把号加白，或换用支持该号的签名地址';
+      }
+      if (/UrlSignException/i.test(text)) {
+        return '提示：签名服务拒绝了请求（UrlSignException），检查 signApiUrl / pcLagrangeSignToken 是否与该服务匹配';
+      }
       if (/签名|signing|signApi/i.test(text) && /(失败|错误|error|invalid|异常)/i.test(text)) {
         return '提示：签名服务可能不可用，检查 security.signApiUrl / pcLagrangeSignToken';
       }
@@ -543,7 +553,9 @@ class Supervisor extends EventEmitter {
     this.emitIncident(account, {
       type: 'offline',
       title: 'Yogurt 账号掉线，已停止进程',
-      detail: reason,
+      detail:
+        `${reason}｜设备身份（guid）已固定，重新扫码即可恢复：面板 → ${account.name || account.id} → 「二维码」` +
+        '（未开启自动重启，避免刷掉二维码导致扫不上）',
       snapshot: before,
     });
   }

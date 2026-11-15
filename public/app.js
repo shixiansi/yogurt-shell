@@ -81,6 +81,7 @@ const state = {
   panelUpdate: null,
   panelApply: null,
   qrTimer: null,
+  obTimer: null,
   es: null,
 };
 
@@ -637,6 +638,10 @@ function closeModal() {
     clearInterval(state.qrTimer);
     state.qrTimer = null;
   }
+  if (state.obTimer) {
+    clearInterval(state.obTimer);
+    state.obTimer = null;
+  }
   $('#modal-root').classList.add('hidden');
   $('#modal-body').innerHTML = '';
 }
@@ -683,13 +688,16 @@ function addAccountModal() {
           </select>
         </div>
         <div class="field"><label>签名 API URL</label><input class="input" id="f-sign" value="https://sign.shixiansi.pw/laptop/" /></div>
+        <div class="field"><label>签名令牌（可选，管理员提供）</label><input class="input" id="f-sign-token" placeholder="留空 = 不填；会写进 protocol.pcLagrangeSignToken" /></div>
+        <div class="field"><label>备注（可选）</label><input class="input" id="f-note" placeholder="例如 主号 / 测试号" /></div>
       </div>
       <div class="field" style="margin-top:12px">
         <label class="check"><input type="checkbox" id="f-autostart" checked /> 面板启动时自动拉起</label>
-        <div class="hint">PC 协议首次登录会把二维码/链接打印到日志里，可在「日志」抽屉里看，或点卡片上的「二维码」。</div>
-        <div class="hint">协议版本选 <span class="mono">custom</span> 时，yogurt 需要账号目录里有 <span class="mono">app-info.json</span>；面板会自动从内置模板补一份（缺了会导致 yogurt 启动即崩溃）。</div>
+        <div class="hint">创建后会直接进「接入向导」：自动启动 → 出二维码 → 扫码上线。</div>
+        <div class="hint">设备指纹（guid + 设备名）在<b>建号时就写进</b> <span class="mono">session-store.json</span>，之后每次重启都复用，不会出现「短时间内多台新设备登录」。</div>
+        <div class="hint">协议版本选 <span class="mono">custom</span> 时，yogurt 还需要账号目录里的 <span class="mono">app-info.json</span>（面板会自动补）。</div>
       </div>
-      <div class="row" style="margin-top:14px"><button class="btn primary" id="f-submit">创建账号</button></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" id="f-submit">创建账号并开始接入</button></div>
     </div>
 
     <div data-pane="import" class="hidden">
@@ -723,12 +731,15 @@ function addAccountModal() {
               os: $('#f-os', body).value,
               version: $('#f-version', body).value,
               signApiUrl: $('#f-sign', body).value.trim(),
+              signToken: $('#f-sign-token', body).value.trim(),
+              note: $('#f-note', body).value.trim(),
               autoStart: $('#f-autostart', body).checked,
             };
-            await api('/api/accounts', { method: 'POST', body: payload });
-            closeModal();
-            toast('账号已创建');
+            const created = await api('/api/accounts', { method: 'POST', body: payload });
             applyState(await api('/api/state'));
+            toast('账号已创建，设备指纹已固定');
+            // P1：直接进接入向导（自动启动 → 二维码 → 上线）
+            onboardModal(created.account.id);
           } catch (err) {
             toast(err.message, 'error');
           }
@@ -1480,6 +1491,106 @@ function configModal(acc) {
             msg.textContent = err.message;
             toast(err.message, 'error');
           }
+        };
+      },
+    }
+  );
+}
+
+// 接入向导（P1）：建号后自动启动 → 出二维码 → 扫码 → 上线
+async function onboardModal(accountId) {
+  const acc = state.accounts.find((a) => a.id === accountId);
+  openModal(
+    `接入向导 · ${acc ? acc.name : accountId}`,
+    `
+    <div class="section" style="padding:12px"><div id="ob-steps" class="hint">准备中…</div></div>
+    <div style="text-align:center;min-height:150px;display:flex;align-items:center;justify-content:center" id="ob-qr">
+      <div class="hint">正在生成二维码…</div>
+    </div>
+    <div class="hint" id="ob-msg">用要接入的 QQ 扫码，然后在手机上确认登录。</div>
+    <div class="row"><button class="btn" id="ob-close">关闭</button></div>
+  `,
+    {
+      onOpen(body) {
+        const stepsEl = $('#ob-steps', body);
+        const qrEl = $('#ob-qr', body);
+        const msg = $('#ob-msg', body);
+        let blobUrl = null;
+        let lastQrAt = 0;
+
+        const loadQr = async () => {
+          try {
+            const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/qrcode?t=${Date.now()}`, {
+              headers: token ? { 'x-panel-token': token } : {},
+              cache: 'no-store',
+            });
+            if (!res.ok) {
+              qrEl.innerHTML = '<div class="hint">还没生成二维码，再等等…</div>';
+              return false;
+            }
+            const blob = await res.blob();
+            if (blobUrl) URL.revokeObjectURL(blobUrl);
+            blobUrl = URL.createObjectURL(blob);
+            qrEl.innerHTML = `<img src="${blobUrl}" alt="登录二维码" style="width:260px;height:260px;background:#fff;border-radius:12px;padding:8px" />`;
+            lastQrAt = Date.now();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        const render = async () => {
+          const a = state.accounts.find((x) => x.id === accountId);
+          const status = a ? a.status : 'unknown';
+          const done = (t) => `<div>✅ ${t}</div>`;
+          const doing = (t) => `<div style="color:var(--warn)">⏳ ${t}</div>`;
+          const todo = (t) => `<div class="muted">○ ${t}</div>`;
+          const running = ['starting', 'login', 'online', 'stopping'].includes(status);
+          stepsEl.innerHTML = [
+            done('账号已创建（guid / 设备名已固定）'),
+            running ? done('yogurt 已启动') : status === 'online' ? done('yogurt 已启动') : doing('正在启动 yogurt…'),
+            status === 'online' ? done('扫码完成，账号已上线') : status === 'login' ? doing('等待扫码登录') : todo('等待扫码登录'),
+            status === 'online' ? done('接入完成') : todo('接入完成'),
+          ].join('');
+
+          if (status === 'online') {
+            qrEl.innerHTML = '<div class="hint" style="color:var(--accent);font-size:15px">🎉 接入完成</div>';
+            msg.textContent = '账号已上线，可以关闭这个窗口了。';
+            return;
+          }
+          if (status === 'login' || status === 'starting') {
+            if (Date.now() - lastQrAt > 8000) await loadQr();
+            return;
+          }
+          if (['stopped', 'crashed', 'offline'].includes(status)) {
+            qrEl.innerHTML = '<div class="hint">账号没有在运行</div>';
+            msg.textContent = a && a.reason ? a.reason : '点卡片上的「启动」重试';
+          }
+        };
+
+        // 建号后如果没在跑，自动启动一次
+        (async () => {
+          const a = state.accounts.find((x) => x.id === accountId);
+          if (!a || ['stopped', 'crashed', 'offline'].includes(a.status)) {
+            try {
+              await api(`/api/accounts/${encodeURIComponent(accountId)}/action`, { method: 'POST', body: { action: 'start' } });
+              applyState(await api('/api/state'));
+            } catch (err) {
+              msg.textContent = '启动失败：' + err.message;
+            }
+          }
+        })();
+
+        render();
+        if (state.obTimer) clearInterval(state.obTimer);
+        state.obTimer = setInterval(render, 2000);
+        $('#ob-close', body).onclick = () => {
+          if (state.obTimer) {
+            clearInterval(state.obTimer);
+            state.obTimer = null;
+          }
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          closeModal();
         };
       },
     }

@@ -7,7 +7,110 @@ const platform = require('./platform');
 
 const SIGNS = 'https://sign.shixiansi.pw/laptop/';
 
-function accountConfigTemplate({ uin, port, host = '127.0.0.1', os = 'Linux', version = 'custom', signApiUrl = SIGNS, password = '', accessToken = '', ffmpegPath = '' }) {
+// ---- 设备指纹（A1）：每台机器一个固定 guid + 像人起的设备名 ----
+// yogurt 在登录成功前每次启动都会随机 guid → 同一账号短时间内会被判成「多台新设备登录」。
+// 预写一份「空凭证 + 固定 guid」的 session-store，就把它钉住了；
+// 登录成功后 yogurt 只更新凭证字段，guid / deviceName 原样保留（实测）。
+const DEVICE_TPL = ['DESKTOP-{H}', 'LAPTOP-{H}', 'ubuntu-{H}', 'arch-{H}', 'fedora-{H}', '{W}-MacBook-Pro', '{W}-de-MacBook-Air'];
+const DEVICE_WORDS = ['john', 'mike', 'alex', 'sam', 'chris', 'lee', 'kim', 'anna'];
+const HEX = '0123456789ABCDEF';
+
+function randHex(len) {
+  let out = '';
+  for (let i = 0; i < len; i += 1) out += HEX[Math.floor(Math.random() * 16)];
+  return out;
+}
+
+function genDeviceName() {
+  const template = DEVICE_TPL[Math.floor(Math.random() * DEVICE_TPL.length)];
+  const word = DEVICE_WORDS[Math.floor(Math.random() * DEVICE_WORDS.length)];
+  return template.replace('{H}', randHex(6)).replace('{W}', word);
+}
+
+function genGuid() {
+  return Array.from({ length: 16 }, () => Math.floor(Math.random() * 256) - 128);
+}
+
+// 空凭证是刻意的：填假值会让 yogurt 误走票据登录（EasyLogin）而不出二维码
+function genPinnedSessionStore(uin, deviceName) {
+  return {
+    uin: Number(uin),
+    uid: '',
+    a2: [],
+    d2: [],
+    d2Key: [],
+    tgtgt: [],
+    encryptedA1: [],
+    noPicSig: [],
+    qrSig: [],
+    guid: genGuid(),
+    deviceName: deviceName || genDeviceName(),
+    credentialsUpdatedAtEpochSeconds: 0,
+  };
+}
+
+function guidHex(sessionStore) {
+  const guid = Array.isArray(sessionStore && sessionStore.guid) ? sessionStore.guid : [];
+  return guid.map((b) => (b & 0xff).toString(16).padStart(2, '0')).join('');
+}
+
+function hasValidGuid(sessionStore) {
+  const guid = sessionStore && sessionStore.guid;
+  return Array.isArray(guid) && guid.length === 16 && guid.every((n) => Number.isFinite(n));
+}
+
+// 有凭证就说明已经登录过，别动它（改 guid 反而制造「设备更换」信号）
+function hasCredentials(sessionStore) {
+  return Boolean(sessionStore && Array.isArray(sessionStore.a2) && sessionStore.a2.length > 0);
+}
+
+function readSessionStore(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'session-store.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// 确保账号目录里有一份「钉住 guid」的 session-store；已有凭证/已有合法 guid 则不动
+function ensurePinnedSessionStore(account, { force = false } = {}) {
+  const dir = store.accountDir(account);
+  const file = path.join(dir, 'session-store.json');
+  const existing = readSessionStore(dir);
+
+  if (existing && hasCredentials(existing)) {
+    return { changed: false, reason: 'already-logged-in', guid: hasValidGuid(existing) ? guidHex(existing) : null, file };
+  }
+  if (existing && hasValidGuid(existing)) {
+    return { changed: false, reason: 'guid-pinned', guid: guidHex(existing), file };
+  }
+  if (!force && fs.existsSync(file) && existing && !hasValidGuid(existing)) {
+    // 文件在但 guid 不合法：补一个 guid，其余字段保留
+    existing.guid = genGuid();
+    if (!existing.deviceName) existing.deviceName = genDeviceName();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(existing), 'utf8');
+    return { changed: true, reason: 'filled-guid', guid: guidHex(existing), file };
+  }
+
+  const fresh = genPinnedSessionStore(account.id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(fresh), 'utf8');
+  return { changed: true, reason: 'created', guid: guidHex(fresh), deviceName: fresh.deviceName, file };
+}
+
+function accountConfigTemplate({
+  uin,
+  port,
+  host = '127.0.0.1',
+  os = 'Linux',
+  version = 'custom',
+  signApiUrl = SIGNS,
+  password = '',
+  accessToken = '',
+  ffmpegPath = '',
+  signToken = '',
+}) {
   return {
     configVersion: 3,
     protocol: {
@@ -16,7 +119,8 @@ function accountConfigTemplate({ uin, port, host = '127.0.0.1', os = 'Linux', ve
       os,
       version,
       signApiUrl,
-      pcLagrangeSignToken: '',
+      // 签名令牌只能写在 protocol 段：security 段会被 yogurt 按自身 schema 清掉（实测）
+      pcLagrangeSignToken: signToken || '',
       androidUseLegacySign: false,
       autoRenewSession: true,
     },
@@ -180,14 +284,18 @@ function create(input) {
     password: input.password || '',
     accessToken: account.accessToken,
     ffmpegPath: input.ffmpegPath || '',
+    signToken: input.signToken || '',
   });
   store.writeAccountConfig(account, ac);
   ensureAppInfo(account, input.sourceDir);
   const exe = ensureExe(account, { sourceDir: input.sourceDir });
 
+  // A1：登录前就把设备身份钉住（不然每次启动换 guid = 「多台新设备登录」画像）
+  const pin = ensurePinnedSessionStore(account);
+
   cfg.accounts.push(account);
   store.save(cfg);
-  return { account, exe };
+  return { account, exe, device: pin };
 }
 
 function importAccount(input) {
@@ -368,7 +476,19 @@ function repairAccount(id, mode = 'auto') {
     changed.push(`protocol.version 从 custom 改为内置版本 ${target}（os=${os}）`);
   }
 
-  return { changed, version: (config.protocol || {}).version, account };
+  // R1：老账号补钉 guid（已有凭证的不动 —— 那说明它已经登录过，guid 早就固化了）
+  const pin = ensurePinnedSessionStore(account);
+  if (pin.changed) {
+    changed.push(
+      pin.reason === 'filled-guid'
+        ? `session-store 缺 guid，已补：${pin.guid}`
+        : `已生成钉住 guid 的 session-store：${pin.guid}（${pin.deviceName || ''}）`
+    );
+  } else if (pin.reason === 'already-logged-in') {
+    changed.push('已有登录凭证，保持原样（不动 guid，避免制造「设备更换」）');
+  }
+
+  return { changed, version: (config.protocol || {}).version, account, sessionStore: pin };
 }
 
 // 账号配置体检：一眼看出 app-info.json / 可执行文件 / 协议版本这些坑
@@ -380,6 +500,7 @@ function diagnose(id) {
   const protocol = (config && config.protocol) || {};
   const appInfo = path.join(dir, 'app-info.json');
   const sources = appInfoSources().map((item) => ({ path: item, exists: fs.existsSync(item) }));
+  const session = readSessionStore(dir);
   return {
     accountId: account.id,
     dir,
@@ -389,11 +510,18 @@ function diagnose(id) {
     version: protocol.version || null,
     os: protocol.os || null,
     signApiUrl: protocol.signApiUrl || null,
+    signToken: protocol.pcLagrangeSignToken ? '已配置' : '未配置',
     appInfoPath: appInfo,
     appInfoExists: fs.existsSync(appInfo),
     appInfoSources: sources,
     binary: platform.findBinary(dir),
     binaryNames: platform.binNames(),
+    // 设备指纹：钉住的 guid 与设备名
+    sessionStorePath: path.join(dir, 'session-store.json'),
+    sessionStoreExists: fs.existsSync(path.join(dir, 'session-store.json')),
+    guid: session && hasValidGuid(session) ? guidHex(session) : null,
+    deviceName: (session && session.deviceName) || null,
+    loggedIn: Boolean(session && hasCredentials(session)),
   };
 }
 
@@ -403,6 +531,13 @@ module.exports = {
   ensureAppInfo,
   seedTemplate,
   appInfoSources,
+  // 设备指纹
+  genDeviceName,
+  genPinnedSessionStore,
+  guidHex,
+  ensurePinnedSessionStore,
+  hasValidGuid,
+  hasCredentials,
   create,
   importAccount,
   repairAccount,

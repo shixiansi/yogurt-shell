@@ -451,6 +451,61 @@ check('.cmd 里不出现中文（chcp 65001 + 多字节会让 cmd 解析错乱�
     console.log('  FAIL canBind -> ' + err.message);
   }
 
+  // ---------- 14. 设备指纹（多账号接入） ----------
+  console.log('\n[14] 设备指纹 / 接入');
+  try {
+    const accounts = require('../src/accounts');
+    const fake = accounts.genPinnedSessionStore('100000001');
+    if (!Array.isArray(fake.guid) || fake.guid.length !== 16) throw new Error('guid 必须是 16 字节数组');
+    if (!fake.guid.every((n) => Number.isInteger(n) && n >= -128 && n <= 127)) throw new Error('guid 字节越界');
+    for (const key of ['a2', 'd2', 'd2Key', 'tgtgt', 'encryptedA1', 'noPicSig', 'qrSig']) {
+      if (!Array.isArray(fake[key]) || fake[key].length !== 0) throw new Error(key + ' 必须为空数组（否则会走票据登录）');
+    }
+    if (/^Lagrange-/i.test(fake.deviceName)) throw new Error('设备名不该是默认 Lagrange 前缀：' + fake.deviceName);
+    if (!/[A-Za-z]/.test(fake.deviceName)) throw new Error('设备名不像主机名：' + fake.deviceName);
+    if (accounts.guidHex(fake).length !== 32) throw new Error('guidHex 必须是 32 位十六进制');
+    pass += 1;
+    console.log(`  ok   空凭证 + 16 字节 guid + 设备名（示例：${fake.deviceName}）`);
+  } catch (err) {
+    failures.push({ name: 'genPinnedSessionStore', error: err.message });
+    console.log('  FAIL genPinnedSessionStore -> ' + err.message);
+  }
+  try {
+    const accounts = require('../src/accounts');
+    const dir = tmpDir('ys-pin-');
+    const account = { id: '100000001', dir };
+    const first = accounts.ensurePinnedSessionStore(account);
+    if (!first.changed || first.reason !== 'created') throw new Error('首次应创建：' + JSON.stringify(first));
+    const again = accounts.ensurePinnedSessionStore(account);
+    if (again.changed || again.reason !== 'guid-pinned') throw new Error('第二次不应改动：' + JSON.stringify(again));
+    if (again.guid !== first.guid) throw new Error('guid 变了');
+    const file = path.join(dir, 'session-store.json');
+    const session = JSON.parse(fs.readFileSync(file, 'utf8'));
+    session.a2 = [1, 2, 3];
+    fs.writeFileSync(file, JSON.stringify(session), 'utf8');
+    const logged = accounts.ensurePinnedSessionStore(account);
+    if (logged.changed || logged.reason !== 'already-logged-in') throw new Error('有凭证时不应动：' + JSON.stringify(logged));
+    fs.rmSync(dir, { recursive: true, force: true });
+    pass += 1;
+    console.log('  ok   ensurePinnedSessionStore：只创建一次，有凭证不动');
+  } catch (err) {
+    failures.push({ name: 'ensurePinnedSessionStore', error: err.message });
+    console.log('  FAIL ensurePinnedSessionStore -> ' + err.message);
+  }
+  try {
+    const accounts = require('../src/accounts');
+    const withToken = accounts.accountConfigTemplate({ uin: '100000001', port: 3000, signToken: 'tok-123' });
+    if (withToken.protocol.pcLagrangeSignToken !== 'tok-123') throw new Error('令牌没写进 protocol.pcLagrangeSignToken');
+    if (JSON.stringify(withToken.security).includes('tok-123')) throw new Error('令牌不该出现在 security 段（会被 yogurt 清掉）');
+    const empty = accounts.accountConfigTemplate({ uin: '100000001', port: 3000 });
+    if (empty.protocol.pcLagrangeSignToken !== '') throw new Error('默认应为空字符串');
+    pass += 1;
+    console.log('  ok   签名令牌写在 protocol 段，security 段不含它');
+  } catch (err) {
+    failures.push({ name: 'signToken', error: err.message });
+    console.log('  FAIL signToken -> ' + err.message);
+  }
+
   // ---------- 汇总 ----------
   console.log(`\n平台：${process.platform}-${process.arch} / Node ${process.version}`);
   if (failures.length) {

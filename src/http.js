@@ -299,7 +299,7 @@ function createServer(ctx) {
       const body = await readJson(req);
       const result = accountsMod.create(body);
       broadcast({ type: 'accounts' });
-      return sendJson(res, 200, { ok: true, account: result.account, exe: result.exe });
+      return sendJson(res, 200, { ok: true, account: result.account, exe: result.exe, device: result.device });
     }
     if (pathname === '/api/accounts/import' && method === 'POST') {
       const body = await readJson(req);
